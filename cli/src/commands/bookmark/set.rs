@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use clap::builder::NonEmptyStringValueParser;
 use clap_complete::ArgValueCandidates;
 use jj_lib::object_id::ObjectId as _;
 use jj_lib::op_store::RefTarget;
+use jj_lib::revset;
 
 use super::has_tracked_remote_bookmarks;
 use super::is_fast_forward;
@@ -29,7 +29,11 @@ use crate::ui::Ui;
 /// Create or update a bookmark to point to a certain commit
 #[derive(clap::Args, Clone, Debug)]
 pub struct BookmarkSetArgs {
+    // TODO(#5374): Make required in jj 0.32+
     /// The bookmark's target revision
+    //
+    // Currently target revision defaults to the working copy if not specified, but in the near
+    // future it will be required to explicitly specify it.
     #[arg(
         long, short,
         visible_alias = "to",
@@ -45,7 +49,7 @@ pub struct BookmarkSetArgs {
     /// The bookmarks to update
     #[arg(
         required = true,
-        value_parser = NonEmptyStringValueParser::new(),
+        value_parser = revset::parse_symbol,
         add = ArgValueCandidates::new(complete::local_bookmarks),
     )]
     names: Vec<String>,
@@ -57,6 +61,13 @@ pub fn cmd_bookmark_set(
     args: &BookmarkSetArgs,
 ) -> Result<(), CommandError> {
     let mut workspace_command = command.workspace_helper(ui)?;
+    if args.revision.is_none() {
+        writeln!(
+            ui.warning_default(),
+            "Target revision was not specified, defaulting to the working copy (--revision=@). In \
+             the near future it will be required to explicitly specify target revision."
+        )?;
+    }
     let target_commit = workspace_command
         .resolve_single_rev(ui, args.revision.as_ref().unwrap_or(&RevisionArg::AT))?;
     let repo = workspace_command.repo().as_ref();
@@ -105,13 +116,6 @@ pub fn cmd_bookmark_set(
     }
     if bookmark_names.len() > 1 && args.revision.is_none() {
         writeln!(ui.hint_default(), "Use -r to specify the target revision.")?;
-    }
-    if new_bookmark_count > 0 {
-        // TODO: delete this hint in jj 0.25+
-        writeln!(
-            ui.hint_default(),
-            "Consider using `jj bookmark move` if your intention was to move existing bookmarks."
-        )?;
     }
 
     tx.finish(

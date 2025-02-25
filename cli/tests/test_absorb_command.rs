@@ -14,64 +14,81 @@
 
 use std::path::Path;
 
+use crate::common::CommandOutput;
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_absorb_simple() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m0"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m0"])
+        .success();
     std::fs::write(repo_path.join("file1"), "").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m1"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m1"]).success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m2"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m2"]).success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n2a\n2b\n").unwrap();
 
     // Empty commit
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @"Nothing changed.");
+    test_env.run_jj_in(&repo_path, ["new"]).success();
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Nothing changed.
+    [EOF]
+    ");
 
     // Insert first and last lines
     std::fs::write(repo_path.join("file1"), "1X\n1a\n1b\n2a\n2b\n2Z\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       zsuskuln 3027ca7a 2
       kkmpptxz d0f1e8dd 1
     Working copy now at: yqosqzyt 277bed24 (empty) (no description set)
     Parent commit      : zsuskuln 3027ca7a 2
+    [EOF]
     ");
 
     // Modify middle line in hunk
     std::fs::write(repo_path.join("file1"), "1X\n1A\n1b\n2a\n2b\n2Z\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       kkmpptxz d366d92c 1
     Rebased 1 descendant commits.
     Working copy now at: vruxwmqv 32eb72fe (empty) (no description set)
     Parent commit      : zsuskuln 5bf0bc06 2
+    [EOF]
     ");
 
     // Remove middle line from hunk
     std::fs::write(repo_path.join("file1"), "1X\n1A\n1b\n2a\n2Z\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       zsuskuln 6e2c4777 2
     Working copy now at: yostqsxw 4a48490c (empty) (no description set)
     Parent commit      : zsuskuln 6e2c4777 2
+    [EOF]
     ");
 
     // Insert ambiguous line in between
     std::fs::write(repo_path.join("file1"), "1X\n1A\n1b\nY\n2a\n2Z\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @"Nothing changed.");
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Nothing changed.
+    [EOF]
+    ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "mutable()"), @r"
     @  yostqsxw 80965bcc (no description set)
@@ -110,6 +127,7 @@ fn test_absorb_simple() {
     │  diff --git a/file1 b/file1
     ~  new file mode 100644
        index 0000000000..e69de29bb2
+    [EOF]
     ");
     insta::assert_snapshot!(get_evolog(&test_env, &repo_path, "description(1)"), @r"
     ○    kkmpptxz d366d92c 1
@@ -122,6 +140,7 @@ fn test_absorb_simple() {
     │ ○  mzvwutvl hidden 2bc3d2ce (empty) (no description set)
     ○  kkmpptxz hidden ee76d790 1
     ○  kkmpptxz hidden 677e62d5 (empty) 1
+    [EOF]
     ");
     insta::assert_snapshot!(get_evolog(&test_env, &repo_path, "description(2)"), @r"
     ○    zsuskuln 6e2c4777 2
@@ -135,28 +154,32 @@ fn test_absorb_simple() {
     │ ○  mzvwutvl hidden 2bc3d2ce (empty) (no description set)
     ○  zsuskuln hidden cca09b4d 2
     ○  zsuskuln hidden 7b092471 (empty) 2
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_replace_single_line_hunk() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m1"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m1"])
+        .success();
     std::fs::write(repo_path.join("file1"), "1a\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m2"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m2"]).success();
     std::fs::write(repo_path.join("file1"), "2a\n1a\n2b\n").unwrap();
 
     // Replace single-line hunk, which produces a conflict right now. If our
     // merge logic were based on interleaved delta, the hunk would be applied
     // cleanly.
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "2a\n1A\n2b\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       qpvuntsm 7e885236 (conflict) 1
     Rebased 1 descendant commits.
@@ -164,11 +187,12 @@ fn test_absorb_replace_single_line_hunk() {
     Parent commit      : kkmpptxz 7c36845c 2
     New conflicts appeared in these commits:
       qpvuntsm 7e885236 (conflict) 1
-    To resolve the conflicts, start by updating to it:
+    Hint: To resolve the conflicts, start by updating to it:
       jj new qpvuntsm
     Then use `jj resolve`, or edit the conflict markers in the file directly.
     Once the conflicts are resolved, you may want to inspect the result with `jj diff`.
     Then run `jj squash` to move the resolution into the conflicted commit.
+    [EOF]
     ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "mutable()"), @r"
@@ -206,39 +230,47 @@ fn test_absorb_replace_single_line_hunk() {
        +1A
        +2b
        +>>>>>>> Conflict 1 of 1 ends
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_merge() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m0"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m0"])
+        .success();
     std::fs::write(repo_path.join("file1"), "0a\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m1"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m1"]).success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n0a\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m2", "description(0)"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m2", "description(0)"])
+        .success();
     std::fs::write(repo_path.join("file1"), "0a\n2a\n2b\n").unwrap();
 
-    let (_stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["new", "-m3", "description(1)", "description(2)"],
+        ["new", "-m3", "description(1)", "description(2)"],
     );
-    insta::assert_snapshot!(stderr, @r"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: mzvwutvl 08898161 (empty) 3
     Parent commit      : kkmpptxz 7e9df299 1
     Parent commit      : zsuskuln baf056cf 2
     Added 0 files, modified 1 files, removed 0 files
+    [EOF]
     ");
 
     // Modify first and last lines, absorb from merge
     std::fs::write(repo_path.join("file1"), "1A\n1b\n0a\n2a\n2B\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       zsuskuln 71d1ee56 2
       kkmpptxz 4d379399 1
@@ -246,20 +278,23 @@ fn test_absorb_merge() {
     Working copy now at: mzvwutvl 9db19b54 (empty) 3
     Parent commit      : kkmpptxz 4d379399 1
     Parent commit      : zsuskuln 71d1ee56 2
+    [EOF]
     ");
 
     // Add hunk to merge revision
     std::fs::write(repo_path.join("file2"), "3a\n").unwrap();
 
     // Absorb into merge
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file2"), "3A\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       mzvwutvl e93c0210 3
     Working copy now at: vruxwmqv 1b10dfa4 (empty) (no description set)
     Parent commit      : mzvwutvl e93c0210 3
+    [EOF]
     ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "mutable()"), @r"
@@ -298,41 +333,48 @@ fn test_absorb_merge() {
        +++ b/file1
        @@ -0,0 +1,1 @@
        +0a
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_discardable_merge_with_descendant() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m0"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m0"])
+        .success();
     std::fs::write(repo_path.join("file1"), "0a\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m1"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m1"]).success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n0a\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m2", "description(0)"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m2", "description(0)"])
+        .success();
     std::fs::write(repo_path.join("file1"), "0a\n2a\n2b\n").unwrap();
 
-    let (_stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["new", "description(1)", "description(2)"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["new", "description(1)", "description(2)"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: mzvwutvl f59b2364 (empty) (no description set)
     Parent commit      : kkmpptxz 7e9df299 1
     Parent commit      : zsuskuln baf056cf 2
     Added 0 files, modified 1 files, removed 0 files
+    [EOF]
     ");
 
     // Modify first and last lines in the merge commit
     std::fs::write(repo_path.join("file1"), "1A\n1b\n0a\n2a\n2B\n").unwrap();
     // Add new commit on top
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m3"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m3"]).success();
     std::fs::write(repo_path.join("file2"), "3a\n").unwrap();
     // Then absorb the merge commit
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb", "--from=@-"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb", "--from=@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       zsuskuln 02668cf6 2
       kkmpptxz fcabe394 1
@@ -340,6 +382,7 @@ fn test_absorb_discardable_merge_with_descendant() {
     Working copy now at: royxmykx f04f1247 3
     Parent commit      : kkmpptxz fcabe394 1
     Parent commit      : zsuskuln 02668cf6 2
+    [EOF]
     ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "mutable()"), @r"
@@ -377,36 +420,41 @@ fn test_absorb_discardable_merge_with_descendant() {
        +++ b/file1
        @@ -0,0 +1,1 @@
        +0a
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_conflict() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m1"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m1"])
+        .success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()"]);
+    test_env.run_jj_in(&repo_path, ["new", "root()"]).success();
     std::fs::write(repo_path.join("file1"), "2a\n2b\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["rebase", "-r@", "-ddescription(1)"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["rebase", "-r@", "-ddescription(1)"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Rebased 1 commits onto destination
     Working copy now at: kkmpptxz 74405a07 (conflict) (no description set)
     Parent commit      : qpvuntsm 3619e4e5 1
     Added 0 files, modified 1 files, removed 0 files
-    There are unresolved conflicts at these paths:
+    Warning: There are unresolved conflicts at these paths:
     file1    2-sided conflict
     New conflicts appeared in these commits:
       kkmpptxz 74405a07 (conflict) (no description set)
-    To resolve the conflicts, start by updating to it:
+    Hint: To resolve the conflicts, start by updating to it:
       jj new kkmpptxz
     Then use `jj resolve`, or edit the conflict markers in the file directly.
     Once the conflicts are resolved, you may want to inspect the result with `jj diff`.
     Then run `jj squash` to move the resolution into the conflicted commit.
-    "###);
+    [EOF]
+    ");
 
     let conflict_content =
         String::from_utf8(std::fs::read(repo_path.join("file1")).unwrap()).unwrap();
@@ -422,59 +470,74 @@ fn test_absorb_conflict() {
     ");
 
     // Cannot absorb from conflict
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: Skipping file1: Is a conflict
     Nothing changed.
+    [EOF]
     ");
 
     // Cannot absorb from resolved conflict
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "1A\n1b\n2a\n2B\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: Skipping file1: Is a conflict
     Nothing changed.
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_deleted_file() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m1"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m1"])
+        .success();
     std::fs::write(repo_path.join("file1"), "1a\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::remove_file(repo_path.join("file1")).unwrap();
 
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: Skipping file1: Deleted file
     Nothing changed.
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_file_mode() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m1"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m1"])
+        .success();
     std::fs::write(repo_path.join("file1"), "1a\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["file", "chmod", "x", "file1"]);
+    test_env
+        .run_jj_in(&repo_path, ["file", "chmod", "x", "file1"])
+        .success();
 
     // Modify content and mode
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "1A\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["file", "chmod", "n", "file1"]);
+    test_env
+        .run_jj_in(&repo_path, ["file", "chmod", "n", "file1"])
+        .success();
 
     // Mode change shouldn't be absorbed
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       qpvuntsm 991365da 1
     Rebased 1 descendant commits.
@@ -482,6 +545,7 @@ fn test_absorb_file_mode() {
     Parent commit      : qpvuntsm 991365da 1
     Remaining changes:
     M file1
+    [EOF]
     ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "mutable()"), @r"
@@ -497,27 +561,29 @@ fn test_absorb_file_mode() {
        +++ b/file1
        @@ -0,0 +1,1 @@
        +1A
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_from_into() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m1"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m1"]).success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n1c\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m2"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m2"]).success();
     std::fs::write(repo_path.join("file1"), "1a\n2a\n1b\n1c\n2b\n").unwrap();
 
     // Line "X" and "Z" have unambiguous adjacent line within the destinations
     // range. Line "Y" doesn't have such line.
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "1a\nX\n2a\n1b\nY\n1c\n2b\nZ\n").unwrap();
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb", "--into=@-"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb", "--into=@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       kkmpptxz 91df4543 2
     Rebased 1 descendant commits.
@@ -525,6 +591,7 @@ fn test_absorb_from_into() {
     Parent commit      : kkmpptxz 91df4543 2
     Remaining changes:
     M file1
+    [EOF]
     ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "@-::"), @r"
@@ -554,17 +621,20 @@ fn test_absorb_from_into() {
         1c
        +2b
        +Z
+    [EOF]
     ");
 
     // Absorb all lines from the working-copy parent. An empty commit won't be
     // discarded because "absorb" isn't a command to squash commit descriptions.
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb", "--from=@-"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb", "--from=@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       rlvkpnrz 3a5fd02e 1
     Rebased 2 descendant commits.
     Working copy now at: zsuskuln 53ce490b (no description set)
     Parent commit      : kkmpptxz c94cd773 (empty) 2
+    [EOF]
     ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "mutable()"), @r"
@@ -599,29 +669,37 @@ fn test_absorb_from_into() {
     ○  qpvuntsm 230dd059 (empty) (no description set)
     │
     ~
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_paths() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m1"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m1"])
+        .success();
     std::fs::write(repo_path.join("file1"), "1a\n").unwrap();
     std::fs::write(repo_path.join("file2"), "1a\n").unwrap();
 
     // Modify both files
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "1A\n").unwrap();
     std::fs::write(repo_path.join("file2"), "1A\n").unwrap();
 
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb", "unknown"]);
-    insta::assert_snapshot!(stderr, @"Nothing changed.");
+    let output = test_env.run_jj_in(&repo_path, ["absorb", "unknown"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Nothing changed.
+    [EOF]
+    ");
 
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb", "file1"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb", "file1"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       qpvuntsm ae044adb 1
     Rebased 1 descendant commits.
@@ -629,6 +707,7 @@ fn test_absorb_paths() {
     Parent commit      : qpvuntsm ae044adb 1
     Remaining changes:
     M file2
+    [EOF]
     ");
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, "mutable()"), @r"
@@ -655,29 +734,35 @@ fn test_absorb_paths() {
        +++ b/file2
        @@ -0,0 +1,1 @@
        +1a
+    [EOF]
     ");
 }
 
 #[test]
 fn test_absorb_immutable() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     test_env.add_config("revset-aliases.'immutable_heads()' = 'present(main)'");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m1"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m1"])
+        .success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m2"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "set", "-r@-", "main"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m2"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "set", "-r@-", "main"])
+        .success();
     std::fs::write(repo_path.join("file1"), "1a\n1b\n2a\n2b\n").unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "1A\n1b\n2a\n2B\n").unwrap();
 
     // Immutable revisions are excluded by default
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["absorb"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Absorbed changes into these revisions:
       kkmpptxz d80e3c2a 2
     Rebased 1 descendant commits.
@@ -685,15 +770,23 @@ fn test_absorb_immutable() {
     Parent commit      : kkmpptxz d80e3c2a 2
     Remaining changes:
     M file1
+    [EOF]
     ");
 
     // Immutable revisions shouldn't be rewritten
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["absorb", "--into=all()"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["absorb", "--into=all()"]);
+    insta::assert_snapshot!(output, @r##"
+    ------- stderr -------
     Error: Commit 3619e4e52fce is immutable
     Hint: Could not modify commit: qpvuntsm 3619e4e5 main | 1
-    Hint: Pass `--ignore-immutable` or configure the set of immutable commits via `revset-aliases.immutable_heads()`.
-    ");
+    Hint: Immutable commits are used to protect shared history.
+    Hint: For more information, see:
+          - https://jj-vcs.github.io/jj/latest/config/#set-of-immutable-commits
+          - `jj help -k config`, "Set of immutable commits"
+    Hint: This operation would rewrite 1 immutable commits.
+    [EOF]
+    [exit status: 1]
+    "##);
 
     insta::assert_snapshot!(get_diffs(&test_env, &repo_path, ".."), @r"
     @  mzvwutvl 3021153d (no description set)
@@ -726,15 +819,18 @@ fn test_absorb_immutable() {
        @@ -0,0 +1,2 @@
        +1a
        +1b
+    [EOF]
     ");
 }
 
-fn get_diffs(test_env: &TestEnvironment, repo_path: &Path, revision: &str) -> String {
+#[must_use]
+fn get_diffs(test_env: &TestEnvironment, repo_path: &Path, revision: &str) -> CommandOutput {
     let template = r#"format_commit_summary_with_refs(self, "") ++ "\n""#;
-    test_env.jj_cmd_success(repo_path, &["log", "-r", revision, "-T", template, "--git"])
+    test_env.run_jj_in(repo_path, ["log", "-r", revision, "-T", template, "--git"])
 }
 
-fn get_evolog(test_env: &TestEnvironment, repo_path: &Path, revision: &str) -> String {
+#[must_use]
+fn get_evolog(test_env: &TestEnvironment, repo_path: &Path, revision: &str) -> CommandOutput {
     let template = r#"format_commit_summary_with_refs(self, "") ++ "\n""#;
-    test_env.jj_cmd_success(repo_path, &["evolog", "-r", revision, "-T", template])
+    test_env.run_jj_in(repo_path, ["evolog", "-r", revision, "-T", template])
 }

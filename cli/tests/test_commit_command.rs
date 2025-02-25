@@ -15,40 +15,47 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::common::CommandOutput;
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_commit_with_description_from_cli() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     // Description applies to the current working-copy (not the new one)
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m=first"]);
-    insta::assert_snapshot!(get_log_output(&test_env, &workspace_path), @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m=first"])
+        .success();
+    insta::assert_snapshot!(get_log_output(&test_env, &workspace_path), @r"
     @  e8ea92a8b6b3
     ○  fa15625b4a98 first
     ◆  000000000000
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_commit_with_editor() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     // Check that the text file gets initialized with the current description and
     // set a new one
-    test_env.jj_cmd_ok(&workspace_path, &["describe", "-m=initial"]);
+    test_env
+        .run_jj_in(&workspace_path, ["describe", "-m=initial"])
+        .success();
     let edit_script = test_env.set_up_fake_editor();
     std::fs::write(&edit_script, ["dump editor0", "write\nmodified"].join("\0")).unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["commit"]);
-    insta::assert_snapshot!(get_log_output(&test_env, &workspace_path), @r###"
+    test_env.run_jj_in(&workspace_path, ["commit"]).success();
+    insta::assert_snapshot!(get_log_output(&test_env, &workspace_path), @r"
     @  a57b2c95fb75
     ○  159271101e05 modified
     ◆  000000000000
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor0")).unwrap(), @r###"
     initial
@@ -59,9 +66,11 @@ fn test_commit_with_editor() {
     // Check that the editor content includes diff summary
     std::fs::write(workspace_path.join("file1"), "foo\n").unwrap();
     std::fs::write(workspace_path.join("file2"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["describe", "-m=add files"]);
+    test_env
+        .run_jj_in(&workspace_path, ["describe", "-m=add files"])
+        .success();
     std::fs::write(&edit_script, "dump editor1").unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["commit"]);
+    test_env.run_jj_in(&workspace_path, ["commit"]).success();
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor1")).unwrap(), @r###"
     add files
@@ -77,12 +86,12 @@ fn test_commit_with_editor() {
 #[test]
 fn test_commit_with_editor_avoids_unc() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
     let edit_script = test_env.set_up_fake_editor();
 
     std::fs::write(edit_script, "dump-path path").unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["commit"]);
+    test_env.run_jj_in(&workspace_path, ["commit"]).success();
 
     let edited_path =
         PathBuf::from(std::fs::read_to_string(test_env.env_root().join("path")).unwrap());
@@ -95,12 +104,14 @@ fn test_commit_with_editor_avoids_unc() {
 #[test]
 fn test_commit_interactive() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     std::fs::write(workspace_path.join("file1"), "foo\n").unwrap();
     std::fs::write(workspace_path.join("file2"), "bar\n").unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["describe", "-m=add files"]);
+    test_env
+        .run_jj_in(&workspace_path, ["describe", "-m=add files"])
+        .success();
     let edit_script = test_env.set_up_fake_editor();
     std::fs::write(edit_script, ["dump editor"].join("\0")).unwrap();
 
@@ -109,7 +120,9 @@ fn test_commit_interactive() {
     std::fs::write(diff_editor, diff_script).unwrap();
 
     // Create a commit interactively and select only file1
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-i"]);
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-i"])
+        .success();
 
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("instrs")).unwrap(), @r###"
@@ -131,15 +144,17 @@ fn test_commit_interactive() {
     "###);
 
     // Try again with --tool=<name>, which implies --interactive
-    test_env.jj_cmd_ok(&workspace_path, &["undo"]);
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &[
-            "commit",
-            "--config=ui.diff-editor='false'",
-            "--tool=fake-diff-editor",
-        ],
-    );
+    test_env.run_jj_in(&workspace_path, ["undo"]).success();
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            [
+                "commit",
+                "--config=ui.diff-editor='false'",
+                "--tool=fake-diff-editor",
+            ],
+        )
+        .success();
 
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r###"
@@ -151,8 +166,8 @@ fn test_commit_interactive() {
     JJ: Lines starting with "JJ:" (like this one) will be removed.
     "###);
 
-    let stdout = test_env.jj_cmd_success(&workspace_path, &["log", "--summary"]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&workspace_path, ["log", "--summary"]);
+    insta::assert_snapshot!(output, @r"
     @  mzvwutvl test.user@example.com 2001-02-03 08:05:11 21b846a6
     │  (no description set)
     │  A file2
@@ -160,18 +175,21 @@ fn test_commit_interactive() {
     │  add files
     │  A file1
     ◆  zzzzzzzz root() 00000000
+    [EOF]
     ");
 }
 
 #[test]
 fn test_commit_interactive_with_paths() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     std::fs::write(workspace_path.join("file2"), "").unwrap();
     std::fs::write(workspace_path.join("file3"), "").unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["new", "-medit"]);
+    test_env
+        .run_jj_in(&workspace_path, ["new", "-medit"])
+        .success();
     std::fs::write(workspace_path.join("file1"), "foo\n").unwrap();
     std::fs::write(workspace_path.join("file2"), "bar\n").unwrap();
     std::fs::write(workspace_path.join("file3"), "baz\n").unwrap();
@@ -188,11 +206,12 @@ fn test_commit_interactive_with_paths() {
     std::fs::write(diff_editor, diff_script).unwrap();
 
     // Select file1 and file2 by args, then select file1 interactively
-    let (_stdout, stderr) =
-        test_env.jj_cmd_ok(&workspace_path, &["commit", "-i", "file1", "file2"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&workspace_path, ["commit", "-i", "file1", "file2"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: kkmpptxz f3e6062e (no description set)
     Parent commit      : rlvkpnrz 9453cb28 edit
+    [EOF]
     ");
 
     insta::assert_snapshot!(
@@ -205,8 +224,8 @@ fn test_commit_interactive_with_paths() {
     JJ: Lines starting with "JJ:" (like this one) will be removed.
     "#);
 
-    let stdout = test_env.jj_cmd_success(&workspace_path, &["log", "--summary"]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&workspace_path, ["log", "--summary"]);
+    insta::assert_snapshot!(output, @r"
     @  kkmpptxz test.user@example.com 2001-02-03 08:05:09 f3e6062e
     │  (no description set)
     │  M file2
@@ -219,13 +238,14 @@ fn test_commit_interactive_with_paths() {
     │  A file2
     │  A file3
     ◆  zzzzzzzz root() 00000000
+    [EOF]
     ");
 }
 
 #[test]
 fn test_commit_with_default_description() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     test_env.add_config(r#"ui.default-description = "\n\nTESTED=TODO""#);
     let workspace_path = test_env.env_root().join("repo");
 
@@ -233,13 +253,14 @@ fn test_commit_with_default_description() {
     std::fs::write(workspace_path.join("file2"), "bar\n").unwrap();
     let edit_script = test_env.set_up_fake_editor();
     std::fs::write(edit_script, ["dump editor"].join("\0")).unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["commit"]);
+    test_env.run_jj_in(&workspace_path, ["commit"]).success();
 
-    insta::assert_snapshot!(get_log_output(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output(&test_env, &workspace_path), @r"
     @  c65242099289
     ○  573b6df51aea TESTED=TODO
     ◆  000000000000
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r###"
     TESTED=TODO
@@ -255,7 +276,7 @@ fn test_commit_with_default_description() {
 #[test]
 fn test_commit_with_description_template() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     test_env.add_config(
         r#"
         [templates]
@@ -286,7 +307,9 @@ fn test_commit_with_description_template() {
     std::fs::write(workspace_path.join("file3"), "foobar\n").unwrap();
 
     // Only file1 should be included in the diff
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "file1"]);
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "file1"])
+        .success();
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r###"
     JJ: Author: Test User <test.user@example.com> (2001-02-03 08:05:08)
@@ -299,15 +322,17 @@ fn test_commit_with_description_template() {
     "###);
 
     // Only file2 with modified author should be included in the diff
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &[
-            "commit",
-            "--author",
-            "Another User <another.user@example.com>",
-            "file2",
-        ],
-    );
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            [
+                "commit",
+                "--author",
+                "Another User <another.user@example.com>",
+                "file2",
+            ],
+        )
+        .success();
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r###"
     JJ: Author: Another User <another.user@example.com> (2001-02-03 08:05:08)
@@ -320,7 +345,9 @@ fn test_commit_with_description_template() {
     "###);
 
     // Timestamp after the reset should be available to the template
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "--reset-author"]);
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "--reset-author"])
+        .success();
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r###"
     JJ: Author: Test User <test.user@example.com> (2001-02-03 08:05:10)
@@ -336,69 +363,80 @@ fn test_commit_with_description_template() {
 #[test]
 fn test_commit_without_working_copy() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&workspace_path, &["workspace", "forget"]);
-    let stderr = test_env.jj_cmd_failure(&workspace_path, &["commit", "-m=first"]);
-    insta::assert_snapshot!(stderr, @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["workspace", "forget"])
+        .success();
+    let output = test_env.run_jj_in(&workspace_path, ["commit", "-m=first"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: This command requires a working copy
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
 }
 
 #[test]
 fn test_commit_paths() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     std::fs::write(workspace_path.join("file1"), "foo\n").unwrap();
     std::fs::write(workspace_path.join("file2"), "bar\n").unwrap();
 
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m=first", "file1"]);
-    let stdout = test_env.jj_cmd_success(&workspace_path, &["diff", "-r", "@-"]);
-    insta::assert_snapshot!(stdout, @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m=first", "file1"])
+        .success();
+    let output = test_env.run_jj_in(&workspace_path, ["diff", "-r", "@-"]);
+    insta::assert_snapshot!(output, @r"
     Added regular file file1:
             1: foo
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&workspace_path, &["diff"]);
-    insta::assert_snapshot!(stdout, @"
+    let output = test_env.run_jj_in(&workspace_path, ["diff"]);
+    insta::assert_snapshot!(output, @r"
     Added regular file file2:
             1: bar
+    [EOF]
     ");
 }
 
 #[test]
 fn test_commit_paths_warning() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     std::fs::write(workspace_path.join("file1"), "foo\n").unwrap();
     std::fs::write(workspace_path.join("file2"), "bar\n").unwrap();
 
-    let (stdout, stderr) = test_env.jj_cmd_ok(&workspace_path, &["commit", "-m=first", "file3"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&workspace_path, ["commit", "-m=first", "file3"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: The given paths do not match any file: file3
     Working copy now at: rlvkpnrz d1872100 (no description set)
     Parent commit      : qpvuntsm fa15625b (empty) first
-    "###);
-    insta::assert_snapshot!(stdout, @"");
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&workspace_path, &["diff"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&workspace_path, ["diff"]);
+    insta::assert_snapshot!(output, @r"
     Added regular file file1:
             1: foo
     Added regular file file2:
             1: bar
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_commit_reset_author() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     test_env.add_config(
@@ -406,41 +444,39 @@ fn test_commit_reset_author() {
 'format_signature(signature)' = 'signature.name() ++ " " ++ signature.email() ++ " " ++ signature.timestamp()'"#,
     );
     let get_signatures = || {
-        test_env.jj_cmd_success(
-            &repo_path,
-            &[
-                "log",
-                "-r@",
-                "-T",
-                r#"format_signature(author) ++ "\n" ++ format_signature(committer)"#,
-            ],
-        )
+        let template = r#"format_signature(author) ++ "\n" ++ format_signature(committer)"#;
+        test_env.run_jj_in(&repo_path, ["log", "-r@", "-T", template])
     };
-    insta::assert_snapshot!(get_signatures(), @r###"
+    insta::assert_snapshot!(get_signatures(), @r"
     @  Test User test.user@example.com 2001-02-03 04:05:07.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:07.000 +07:00
     ~
-    "###);
+    [EOF]
+    ");
 
     // Reset the author (the committer is always reset)
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "commit",
-            "--config=user.name=Ove Ridder",
-            "--config=user.email=ove.ridder@example.com",
-            "--reset-author",
-            "-m1",
-        ],
-    );
-    insta::assert_snapshot!(get_signatures(), @r###"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "commit",
+                "--config=user.name=Ove Ridder",
+                "--config=user.email=ove.ridder@example.com",
+                "--reset-author",
+                "-m1",
+            ],
+        )
+        .success();
+    insta::assert_snapshot!(get_signatures(), @r"
     @  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:09.000 +07:00
     │  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:09.000 +07:00
     ~
-    "###);
+    [EOF]
+    ");
 }
 
-fn get_log_output(test_env: &TestEnvironment, cwd: &Path) -> String {
+#[must_use]
+fn get_log_output(test_env: &TestEnvironment, cwd: &Path) -> CommandOutput {
     let template = r#"commit_id.short() ++ " " ++ description"#;
-    test_env.jj_cmd_success(cwd, &["log", "-T", template])
+    test_env.run_jj_in(cwd, ["log", "-T", template])
 }

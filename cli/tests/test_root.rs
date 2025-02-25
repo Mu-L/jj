@@ -28,15 +28,21 @@ fn test_root(backend: TestRepoBackend) {
     let root = test_workspace.workspace.workspace_root();
     let subdir = root.join("subdir");
     std::fs::create_dir(&subdir).unwrap();
-    let stdout = test_env.jj_cmd_success(&subdir, &["root"]);
-    assert_eq!(&stdout, &[root.to_str().unwrap(), "\n"].concat());
+    let output = test_env.run_jj_in(&subdir, ["root"]).success();
+    assert_eq!(
+        output.stdout.raw(),
+        &[root.to_str().unwrap(), "\n"].concat()
+    );
 }
 
 #[test]
 fn test_root_outside_a_repo() {
     let test_env = TestEnvironment::default();
-    let stdout = test_env.jj_cmd_failure(Path::new("/"), &["root"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(Path::new("/"), ["root"]);
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: There is no jj repo in "."
-    "###);
+    [EOF]
+    [exit status: 1]
+    "#);
 }

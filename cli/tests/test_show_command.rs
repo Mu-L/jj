@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use itertools::Itertools;
 use regex::Regex;
 
 use crate::common::TestEnvironment;
@@ -20,35 +19,37 @@ use crate::common::TestEnvironment;
 #[test]
 fn test_show() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show"]);
-    let stdout = stdout.lines().skip(2).join("\n");
+    let output = test_env.run_jj_in(&repo_path, ["show"]);
+    let output = output.normalize_stdout_with(|s| s.split_inclusive('\n').skip(2).collect());
 
-    insta::assert_snapshot!(stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:07)
     Committer: Test User <test.user@example.com> (2001-02-03 08:05:07)
 
         (no description set)
-    "#);
+
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_show_basic() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file1"), "foo\n").unwrap();
     std::fs::write(repo_path.join("file2"), "foo\nbaz qux\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::remove_file(repo_path.join("file1")).unwrap();
     std::fs::write(repo_path.join("file2"), "foo\nbar\nbaz quux\n").unwrap();
     std::fs::write(repo_path.join("file3"), "foo\n").unwrap();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -61,10 +62,11 @@ fn test_show_basic() {
             2: bar
        2    3: baz quxquux
     Modified regular file file3 (file1 => file3):
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "--context=0"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "--context=0"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -77,10 +79,11 @@ fn test_show_basic() {
             2: bar
        2    3: baz quxquux
     Modified regular file file3 (file1 => file3):
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "--color=debug"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "--color=debug"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: [38;5;4m<<commit_id::e34f04317a81edc6ba41fef239c0d0180f10656f>>[39m
     Change ID: [38;5;5m<<change_id::rlvkpnrzqnoowoytxnquwvuryrwnrmlp>>[39m
     Author   : [38;5;3m<<author name::Test User>>[39m <[38;5;3m<<author email local::test.user>><<author email::@>><<author email domain::example.com>>[39m> ([38;5;6m<<author timestamp local format::2001-02-03 08:05:09>>[39m)
@@ -93,10 +96,11 @@ fn test_show_basic() {
     <<diff::     >>[38;5;2m<<diff added line_number::   2>>[39m<<diff::: >>[4m[38;5;2m<<diff added token::bar>>[24m[39m
     [38;5;1m<<diff removed line_number::   2>>[39m<<diff:: >>[38;5;2m<<diff added line_number::   3>>[39m<<diff::: baz >>[4m[38;5;1m<<diff removed token::qux>>[38;5;2m<<diff added token::quux>>[24m[39m<<diff::>>
     [38;5;3m<<diff header::Modified regular file file3 (file1 => file3):>>[39m
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "-s"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "-s"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -106,10 +110,11 @@ fn test_show_basic() {
 
     M file2
     R {file1 => file3}
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "--types"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "--types"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -119,10 +124,11 @@ fn test_show_basic() {
 
     FF file2
     FF {file1 => file3}
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "--git"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "--git"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -142,10 +148,11 @@ fn test_show_basic() {
     diff --git a/file1 b/file3
     rename from file1
     rename to file3
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "--git", "--context=0"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "--git", "--context=0"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -164,10 +171,11 @@ fn test_show_basic() {
     diff --git a/file1 b/file3
     rename from file1
     rename to file3
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "--git", "--color=debug"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "--git", "--color=debug"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: [38;5;4m<<commit_id::e34f04317a81edc6ba41fef239c0d0180f10656f>>[39m
     Change ID: [38;5;5m<<change_id::rlvkpnrzqnoowoytxnquwvuryrwnrmlp>>[39m
     Author   : [38;5;3m<<author name::Test User>>[39m <[38;5;3m<<author email local::test.user>><<author email::@>><<author email domain::example.com>>[39m> ([38;5;6m<<author timestamp local format::2001-02-03 08:05:09>>[39m)
@@ -187,10 +195,11 @@ fn test_show_basic() {
     [1m<<diff file_header::diff --git a/file1 b/file3>>[0m
     [1m<<diff file_header::rename from file1>>[0m
     [1m<<diff file_header::rename to file3>>[0m
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "-s", "--git"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "-s", "--git"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -212,10 +221,11 @@ fn test_show_basic() {
     diff --git a/file1 b/file3
     rename from file1
     rename to file3
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "--stat"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["show", "--stat"]);
+    insta::assert_snapshot!(output, @r"
     Commit ID: e34f04317a81edc6ba41fef239c0d0180f10656f
     Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -226,31 +236,36 @@ fn test_show_basic() {
     file2            | 3 ++-
     {file1 => file3} | 0
     2 files changed, 2 insertions(+), 1 deletion(-)
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_show_with_template() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "a new commit"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "a new commit"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "-T", "description"]);
+    let output = test_env.run_jj_in(&repo_path, ["show", "-T", "description"]);
 
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     a new commit
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_show_with_no_template() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stderr = test_env.jj_cmd_cli_error(&repo_path, &["show", "-T"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["show", "-T"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     error: a value is required for '--template <TEMPLATE>' but none was supplied
 
     For more information, try '--help'.
@@ -271,13 +286,15 @@ fn test_show_with_no_template() {
     - description_placeholder
     - email_placeholder
     - name_placeholder
+    [EOF]
+    [exit status: 2]
     ");
 }
 
 #[test]
 fn test_show_relative_timestamps() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     test_env.add_config(
@@ -287,18 +304,21 @@ fn test_show_relative_timestamps() {
         "#,
     );
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show"]);
+    let output = test_env.run_jj_in(&repo_path, ["show"]);
     let timestamp_re = Regex::new(r"\([0-9]+ years ago\)").unwrap();
-    let stdout = stdout
-        .lines()
-        .skip(2)
-        .map(|x| timestamp_re.replace_all(x, "(...timestamp...)"))
-        .join("\n");
+    let output = output.normalize_stdout_with(|s| {
+        s.split_inclusive('\n')
+            .skip(2)
+            .map(|x| timestamp_re.replace_all(x, "(...timestamp...)"))
+            .collect()
+    });
 
-    insta::assert_snapshot!(stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     Author   : Test User <test.user@example.com> (...timestamp...)
     Committer: Test User <test.user@example.com> (...timestamp...)
 
         (no description set)
-    "#);
+
+    [EOF]
+    ");
 }
