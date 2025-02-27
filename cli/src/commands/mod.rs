@@ -46,12 +46,14 @@ mod restore;
 mod root;
 mod run;
 mod show;
+mod sign;
 mod simplify_parents;
 mod sparse;
 mod split;
 mod squash;
 mod status;
 mod tag;
+mod unsign;
 mod unsquash;
 mod util;
 mod version;
@@ -59,6 +61,8 @@ mod workspace;
 
 use std::fmt::Debug;
 
+use clap::builder::styling::AnsiColor;
+use clap::builder::Styles;
 use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Subcommand;
@@ -72,7 +76,14 @@ use crate::command_error::CommandError;
 use crate::complete;
 use crate::ui::Ui;
 
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Yellow.on_default().bold())
+    .usage(AnsiColor::Yellow.on_default().bold())
+    .literal(AnsiColor::Green.on_default().bold())
+    .placeholder(AnsiColor::Green.on_default());
+
 #[derive(clap::Parser, Clone, Debug)]
+#[command(styles = STYLES)]
 #[command(disable_help_subcommand = true)]
 #[command(after_long_help = help::show_keyword_hint_after_help())]
 #[command(add = SubcommandCandidates::new(complete::aliases))]
@@ -130,6 +141,7 @@ enum Command {
     // TODO: Flesh out.
     Run(run::RunArgs),
     Show(show::ShowArgs),
+    Sign(sign::SignArgs),
     SimplifyParents(simplify_parents::SimplifyParentsArgs),
     #[command(subcommand)]
     Sparse(sparse::SparseCommand),
@@ -142,6 +154,7 @@ enum Command {
     Util(util::UtilCommand),
     /// Undo an operation (shortcut for `jj op undo`)
     Undo(operation::undo::OperationUndoArgs),
+    Unsign(unsign::UnsignArgs),
     // TODO: Delete `unsquash` in jj 0.28+
     #[command(hide = true)]
     Unsquash(unsquash::UnsquashArgs),
@@ -210,12 +223,14 @@ pub fn run_command(ui: &mut Ui, command_helper: &CommandHelper) -> Result<(), Co
             simplify_parents::cmd_simplify_parents(ui, command_helper, args)
         }
         Command::Show(args) => show::cmd_show(ui, command_helper, args),
+        Command::Sign(args) => sign::cmd_sign(ui, command_helper, args),
         Command::Sparse(args) => sparse::cmd_sparse(ui, command_helper, args),
         Command::Split(args) => split::cmd_split(ui, command_helper, args),
         Command::Squash(args) => squash::cmd_squash(ui, command_helper, args),
         Command::Status(args) => status::cmd_status(ui, command_helper, args),
         Command::Tag(args) => tag::cmd_tag(ui, command_helper, args),
         Command::Undo(args) => operation::undo::cmd_op_undo(ui, command_helper, args),
+        Command::Unsign(args) => unsign::cmd_unsign(ui, command_helper, args),
         Command::Unsquash(args) => unsquash::cmd_unsquash(ui, command_helper, args),
         Command::Untrack(args) => {
             let cmd = renamed_cmd("untrack", "file untrack", file::untrack::cmd_file_untrack);

@@ -14,23 +14,24 @@
 
 use indoc::indoc;
 use regex::Regex;
+use testutils::git;
 
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_log_parents() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "@-"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "@", "@-"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
+    test_env.run_jj_in(&repo_path, ["new", "@-"]).success();
+    test_env.run_jj_in(&repo_path, ["new", "@", "@-"]).success();
 
     let template =
         r#"commit_id ++ "\nP: " ++ parents.len() ++ " " ++ parents.map(|c| c.commit_id()) ++ "\n""#;
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", template]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     @    c067170d4ca1bc6162b64f7550617ec809647f84
     ├─╮  P: 2 4db490c88528133d579540b6900b8098f0c17701 230dd059e1b059aefc0da06a2e5a7dbf22362f22
     ○ │  4db490c88528133d579540b6900b8098f0c17701
@@ -39,35 +40,36 @@ fn test_log_parents() {
     │  P: 1 0000000000000000000000000000000000000000
     ◆  0000000000000000000000000000000000000000
        P: 0
-    "###);
+    [EOF]
+    ");
 
     // List<Commit> can be filtered
     let template =
         r#""P: " ++ parents.filter(|c| !c.root()).map(|c| c.commit_id().short()) ++ "\n""#;
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", template]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     @    P: 4db490c88528 230dd059e1b0
     ├─╮
     ○ │  P: 230dd059e1b0
     ├─╯
     ○  P:
     ◆  P:
+    [EOF]
     ");
 
     let template = r#"parents.map(|c| c.commit_id().shortest(4))"#;
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &["log", "-T", template, "-r@", "--color=always"],
-    );
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", template, "-r@", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
     [1m[38;5;2m@[0m  [1m[38;5;4m4[0m[38;5;8mdb4[39m [1m[38;5;4m2[0m[38;5;8m30d[39m
     │
     ~
-    "###);
+    [EOF]
+    ");
 
     // Commit object isn't printable
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["log", "-T", "parents"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", "parents"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: Failed to parse template: Expected expression of type `Template`, but actual type is `List<Commit>`
     Caused by:  --> 1:1
       |
@@ -75,12 +77,15 @@ fn test_log_parents() {
       | ^-----^
       |
       = Expected expression of type `Template`, but actual type is `List<Commit>`
+    [EOF]
+    [exit status: 1]
     ");
 
     // Redundant argument passed to keyword method
     let template = r#"parents.map(|c| c.commit_id(""))"#;
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["log", "-T", template]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", template]);
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Failed to parse template: Function `commit_id`: Expected 0 arguments
     Caused by:  --> 1:29
       |
@@ -88,40 +93,53 @@ fn test_log_parents() {
       |                             ^^
       |
       = Function `commit_id`: Expected 0 arguments
+    [EOF]
+    [exit status: 1]
     "#);
 }
 
 #[test]
 fn test_log_author_timestamp() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "first"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "second"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "first"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "second"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", "author.timestamp()"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", "author.timestamp()"]);
+    insta::assert_snapshot!(output, @r"
     @  2001-02-03 04:05:09.000 +07:00
     ○  2001-02-03 04:05:08.000 +07:00
     ◆  1970-01-01 00:00:00.000 +00:00
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_author_timestamp_ago() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "first"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "second"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "first"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "second"])
+        .success();
 
     let template = r#"author.timestamp().ago() ++ "\n""#;
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-T", template]);
+    let output = test_env
+        .run_jj_in(&repo_path, &["log", "--no-graph", "-T", template])
+        .success();
     let line_re = Regex::new(r"[0-9]+ years ago").unwrap();
     assert!(
-        stdout.lines().all(|x| line_re.is_match(x)),
+        output.stdout.raw().lines().all(|x| line_re.is_match(x)),
         "expected every line to match regex"
     );
 }
@@ -129,44 +147,49 @@ fn test_log_author_timestamp_ago() {
 #[test]
 fn test_log_author_timestamp_utc() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", "author.timestamp().utc()"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", "author.timestamp().utc()"]);
+    insta::assert_snapshot!(output, @r"
     @  2001-02-02 21:05:07.000 +00:00
     ◆  1970-01-01 00:00:00.000 +00:00
-    "###);
+    [EOF]
+    ");
 }
 
 #[cfg(unix)]
 #[test]
 fn test_log_author_timestamp_local() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     test_env.add_env_var("TZ", "UTC-05:30");
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", "author.timestamp().local()"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", "author.timestamp().local()"]);
+    insta::assert_snapshot!(output, @r"
     @  2001-02-03 08:05:07.000 +11:00
     ◆  1970-01-01 11:00:00.000 +11:00
-    "###);
+    [EOF]
+    ");
     test_env.add_env_var("TZ", "UTC+10:00");
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", "author.timestamp().local()"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", "author.timestamp().local()"]);
+    insta::assert_snapshot!(output, @r"
     @  2001-02-03 08:05:07.000 +11:00
     ◆  1970-01-01 11:00:00.000 +11:00
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_author_timestamp_after_before() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "first"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "first"])
+        .success();
 
     let template = r#"
     separate(" ",
@@ -176,16 +199,18 @@ fn test_log_author_timestamp_after_before() {
       if(author.timestamp().before("1975"), "(before 1975)", "(after 1975)"),
       if(author.timestamp().before("now"), "(before now)", "(after now)")
     ) ++ "\n""#;
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-T", template]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     2001-02-03 04:05:08.000 +07:00 : (after 1969) (after 1975) (before now)
     1970-01-01 00:00:00.000 +00:00 : (after 1969) (before 1975) (before now)
-    "#);
+    [EOF]
+    ");
 
     // Should display error with invalid date.
     let template = r#"author.timestamp().after("invalid date")"#;
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["log", "-r@", "--no-graph", "-T", template]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r@", "--no-graph", "-T", template]);
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Failed to parse template: Invalid date pattern
     Caused by:
     1:  --> 1:26
@@ -195,108 +220,127 @@ fn test_log_author_timestamp_after_before() {
       |
       = Invalid date pattern
     2: expected week day or month name
+    [EOF]
+    [exit status: 1]
     "#);
 }
 
 #[test]
 fn test_mine_is_true_when_author_is_user() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "--config=user.email=johndoe@example.com",
-            "--config=user.name=John Doe",
-            "new",
-        ],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "--config=user.email=johndoe@example.com",
+                "--config=user.name=John Doe",
+                "new",
+            ],
+        )
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "-T",
             r#"coalesce(if(mine, "mine"), author.email(), email_placeholder)"#,
         ],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     @  johndoe@example.com
     ○  mine
     ◆  (no email set)
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_default() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file1"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "add a file"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "description 1"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "my-bookmark"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "add a file"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "description 1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "my-bookmark"])
+        .success();
 
     // Test default log output format
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log"]);
+    insta::assert_snapshot!(output, @r"
     @  kkmpptxz test.user@example.com 2001-02-03 08:05:09 my-bookmark bac9ff9e
     │  (empty) description 1
     ○  qpvuntsm test.user@example.com 2001-02-03 08:05:08 aa2015d7
     │  add a file
     ◆  zzzzzzzz root() 00000000
-    "###);
+    [EOF]
+    ");
 
     // Color
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--color=always"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
     [1m[38;5;2m@[0m  [1m[38;5;13mk[38;5;8mkmpptxz[39m [38;5;3mtest.user@example.com[39m [38;5;14m2001-02-03 08:05:09[39m [38;5;13mmy-bookmark[39m [38;5;12mb[38;5;8mac9ff9e[39m[0m
     │  [1m[38;5;10m(empty)[39m description 1[0m
     ○  [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [38;5;3mtest.user@example.com[39m [38;5;6m2001-02-03 08:05:08[39m [1m[38;5;4ma[0m[38;5;8ma2015d7[39m
     │  add a file
     [1m[38;5;14m◆[0m  [1m[38;5;5mz[0m[38;5;8mzzzzzzz[39m [38;5;2mroot()[39m [1m[38;5;4m0[0m[38;5;8m0000000[39m
-    "#);
+    [EOF]
+    ");
 
     // Color without graph
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--color=always", "--no-graph"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--color=always", "--no-graph"]);
+    insta::assert_snapshot!(output, @r"
     [1m[38;5;13mk[38;5;8mkmpptxz[39m [38;5;3mtest.user@example.com[39m [38;5;14m2001-02-03 08:05:09[39m [38;5;13mmy-bookmark[39m [38;5;12mb[38;5;8mac9ff9e[39m[0m
     [1m[38;5;10m(empty)[39m description 1[0m
     [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [38;5;3mtest.user@example.com[39m [38;5;6m2001-02-03 08:05:08[39m [1m[38;5;4ma[0m[38;5;8ma2015d7[39m
     add a file
     [1m[38;5;5mz[0m[38;5;8mzzzzzzz[39m [38;5;2mroot()[39m [1m[38;5;4m0[0m[38;5;8m0000000[39m
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_default_without_working_copy() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["workspace", "forget"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log"]);
-    insta::assert_snapshot!(stdout, @r#"
+    test_env
+        .run_jj_in(&repo_path, ["workspace", "forget"])
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["log"]);
+    insta::assert_snapshot!(output, @r"
     ◆  zzzzzzzz root() 00000000
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_builtin_templates() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    // Render without graph and append "[EOF]" marker to test line ending
-    let render = |template| {
-        test_env.jj_cmd_success(&repo_path, &["log", "-T", template, "--no-graph"]) + "[EOF]\n"
-    };
+    // Render without graph to test line ending
+    let render = |template| test_env.run_jj_in(&repo_path, ["log", "-T", template, "--no-graph"]);
 
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["--config=user.email=''", "--config=user.name=''", "new"],
-    );
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "my-bookmark"]);
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["--config=user.email=''", "--config=user.name=''", "new"],
+        )
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "my-bookmark"])
+        .success();
 
     insta::assert_snapshot!(render(r#"builtin_log_oneline"#), @r###"
     rlvkpnrz (no email set) 2001-02-03 08:05:08 my-bookmark dc315397 (empty) (no description set)
@@ -356,32 +400,38 @@ fn test_log_builtin_templates() {
 #[test]
 fn test_log_builtin_templates_colored() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     let render =
-        |template| test_env.jj_cmd_success(&repo_path, &["--color=always", "log", "-T", template]);
+        |template| test_env.run_jj_in(&repo_path, ["--color=always", "log", "-T", template]);
 
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["--config=user.email=''", "--config=user.name=''", "new"],
-    );
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "my-bookmark"]);
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["--config=user.email=''", "--config=user.name=''", "new"],
+        )
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "my-bookmark"])
+        .success();
 
-    insta::assert_snapshot!(render(r#"builtin_log_oneline"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_oneline"#), @r"
     [1m[38;5;2m@[0m  [1m[38;5;13mr[38;5;8mlvkpnrz[39m [38;5;9m(no email set)[39m [38;5;14m2001-02-03 08:05:08[39m [38;5;13mmy-bookmark[39m [38;5;12md[38;5;8mc315397[39m [38;5;10m(empty)[39m [38;5;10m(no description set)[39m[0m
     ○  [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [38;5;3mtest.user[39m [38;5;6m2001-02-03 08:05:07[39m [1m[38;5;4m2[0m[38;5;8m30dd059[39m [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
     [1m[38;5;14m◆[0m  [1m[38;5;5mz[0m[38;5;8mzzzzzzz[39m [38;5;2mroot()[39m [1m[38;5;4m0[0m[38;5;8m0000000[39m
-    "#);
+    [EOF]
+    ");
 
-    insta::assert_snapshot!(render(r#"builtin_log_compact"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_compact"#), @r"
     [1m[38;5;2m@[0m  [1m[38;5;13mr[38;5;8mlvkpnrz[39m [38;5;9m(no email set)[39m [38;5;14m2001-02-03 08:05:08[39m [38;5;13mmy-bookmark[39m [38;5;12md[38;5;8mc315397[39m[0m
     │  [1m[38;5;10m(empty)[39m [38;5;10m(no description set)[39m[0m
     ○  [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [38;5;3mtest.user@example.com[39m [38;5;6m2001-02-03 08:05:07[39m [1m[38;5;4m2[0m[38;5;8m30dd059[39m
     │  [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
     [1m[38;5;14m◆[0m  [1m[38;5;5mz[0m[38;5;8mzzzzzzz[39m [38;5;2mroot()[39m [1m[38;5;4m0[0m[38;5;8m0000000[39m
-    "#);
+    [EOF]
+    ");
 
-    insta::assert_snapshot!(render(r#"builtin_log_comfortable"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_comfortable"#), @r"
     [1m[38;5;2m@[0m  [1m[38;5;13mr[38;5;8mlvkpnrz[39m [38;5;9m(no email set)[39m [38;5;14m2001-02-03 08:05:08[39m [38;5;13mmy-bookmark[39m [38;5;12md[38;5;8mc315397[39m[0m
     │  [1m[38;5;10m(empty)[39m [38;5;10m(no description set)[39m[0m
     │
@@ -390,9 +440,10 @@ fn test_log_builtin_templates_colored() {
     │
     [1m[38;5;14m◆[0m  [1m[38;5;5mz[0m[38;5;8mzzzzzzz[39m [38;5;2mroot()[39m [1m[38;5;4m0[0m[38;5;8m0000000[39m
 
-    "#);
+    [EOF]
+    ");
 
-    insta::assert_snapshot!(render(r#"builtin_log_detailed"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_detailed"#), @r"
     [1m[38;5;2m@[0m  Commit ID: [38;5;4mdc31539712c7294d1d712cec63cef4504b94ca74[39m
     │  Change ID: [38;5;5mrlvkpnrzqnoowoytxnquwvuryrwnrmlp[39m
     │  Bookmarks: [38;5;5mmy-bookmark[39m
@@ -414,38 +465,46 @@ fn test_log_builtin_templates_colored() {
        Committer: [38;5;1m(no name set)[39m <[38;5;1m(no email set)[39m> ([38;5;6m1970-01-01 11:00:00[39m)
 
        [38;5;2m    (no description set)[39m
-    "#);
+
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_builtin_templates_colored_debug() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     let render =
-        |template| test_env.jj_cmd_success(&repo_path, &["--color=debug", "log", "-T", template]);
+        |template| test_env.run_jj_in(&repo_path, ["--color=debug", "log", "-T", template]);
 
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["--config=user.email=''", "--config=user.name=''", "new"],
-    );
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "my-bookmark"]);
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["--config=user.email=''", "--config=user.name=''", "new"],
+        )
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "my-bookmark"])
+        .success();
 
-    insta::assert_snapshot!(render(r#"builtin_log_oneline"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_oneline"#), @r"
     [1m[38;5;2m<<node working_copy::@>>[0m  [1m[38;5;13m<<log working_copy change_id shortest prefix::r>>[38;5;8m<<log working_copy change_id shortest rest::lvkpnrz>>[39m<<log working_copy:: >>[38;5;9m<<log working_copy email placeholder::(no email set)>>[39m<<log working_copy:: >>[38;5;14m<<log working_copy committer timestamp local format::2001-02-03 08:05:08>>[39m<<log working_copy:: >>[38;5;13m<<log working_copy bookmarks name::my-bookmark>>[39m<<log working_copy:: >>[38;5;12m<<log working_copy commit_id shortest prefix::d>>[38;5;8m<<log working_copy commit_id shortest rest::c315397>>[39m<<log working_copy:: >>[38;5;10m<<log working_copy empty::(empty)>>[39m<<log working_copy:: >>[38;5;10m<<log working_copy empty description placeholder::(no description set)>>[39m<<log working_copy::>>[0m
     <<node::○>>  [1m[38;5;5m<<log change_id shortest prefix::q>>[0m[38;5;8m<<log change_id shortest rest::pvuntsm>>[39m<<log:: >>[38;5;3m<<log author email local::test.user>>[39m<<log:: >>[38;5;6m<<log committer timestamp local format::2001-02-03 08:05:07>>[39m<<log:: >>[1m[38;5;4m<<log commit_id shortest prefix::2>>[0m[38;5;8m<<log commit_id shortest rest::30dd059>>[39m<<log:: >>[38;5;2m<<log empty::(empty)>>[39m<<log:: >>[38;5;2m<<log empty description placeholder::(no description set)>>[39m<<log::>>
     [1m[38;5;14m<<node immutable::◆>>[0m  [1m[38;5;5m<<log change_id shortest prefix::z>>[0m[38;5;8m<<log change_id shortest rest::zzzzzzz>>[39m<<log:: >>[38;5;2m<<log root::root()>>[39m<<log:: >>[1m[38;5;4m<<log commit_id shortest prefix::0>>[0m[38;5;8m<<log commit_id shortest rest::0000000>>[39m<<log::>>
-    "#);
+    [EOF]
+    ");
 
-    insta::assert_snapshot!(render(r#"builtin_log_compact"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_compact"#), @r"
     [1m[38;5;2m<<node working_copy::@>>[0m  [1m[38;5;13m<<log working_copy change_id shortest prefix::r>>[38;5;8m<<log working_copy change_id shortest rest::lvkpnrz>>[39m<<log working_copy:: >>[38;5;9m<<log working_copy email placeholder::(no email set)>>[39m<<log working_copy:: >>[38;5;14m<<log working_copy committer timestamp local format::2001-02-03 08:05:08>>[39m<<log working_copy:: >>[38;5;13m<<log working_copy bookmarks name::my-bookmark>>[39m<<log working_copy:: >>[38;5;12m<<log working_copy commit_id shortest prefix::d>>[38;5;8m<<log working_copy commit_id shortest rest::c315397>>[39m<<log working_copy::>>[0m
     │  [1m[38;5;10m<<log working_copy empty::(empty)>>[39m<<log working_copy:: >>[38;5;10m<<log working_copy empty description placeholder::(no description set)>>[39m<<log working_copy::>>[0m
     <<node::○>>  [1m[38;5;5m<<log change_id shortest prefix::q>>[0m[38;5;8m<<log change_id shortest rest::pvuntsm>>[39m<<log:: >>[38;5;3m<<log author email local::test.user>><<log author email::@>><<log author email domain::example.com>>[39m<<log:: >>[38;5;6m<<log committer timestamp local format::2001-02-03 08:05:07>>[39m<<log:: >>[1m[38;5;4m<<log commit_id shortest prefix::2>>[0m[38;5;8m<<log commit_id shortest rest::30dd059>>[39m<<log::>>
     │  [38;5;2m<<log empty::(empty)>>[39m<<log:: >>[38;5;2m<<log empty description placeholder::(no description set)>>[39m<<log::>>
     [1m[38;5;14m<<node immutable::◆>>[0m  [1m[38;5;5m<<log change_id shortest prefix::z>>[0m[38;5;8m<<log change_id shortest rest::zzzzzzz>>[39m<<log:: >>[38;5;2m<<log root::root()>>[39m<<log:: >>[1m[38;5;4m<<log commit_id shortest prefix::0>>[0m[38;5;8m<<log commit_id shortest rest::0000000>>[39m<<log::>>
-    "#);
+    [EOF]
+    ");
 
-    insta::assert_snapshot!(render(r#"builtin_log_comfortable"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_comfortable"#), @r"
     [1m[38;5;2m<<node working_copy::@>>[0m  [1m[38;5;13m<<log working_copy change_id shortest prefix::r>>[38;5;8m<<log working_copy change_id shortest rest::lvkpnrz>>[39m<<log working_copy:: >>[38;5;9m<<log working_copy email placeholder::(no email set)>>[39m<<log working_copy:: >>[38;5;14m<<log working_copy committer timestamp local format::2001-02-03 08:05:08>>[39m<<log working_copy:: >>[38;5;13m<<log working_copy bookmarks name::my-bookmark>>[39m<<log working_copy:: >>[38;5;12m<<log working_copy commit_id shortest prefix::d>>[38;5;8m<<log working_copy commit_id shortest rest::c315397>>[39m<<log working_copy::>>[0m
     │  [1m[38;5;10m<<log working_copy empty::(empty)>>[39m<<log working_copy:: >>[38;5;10m<<log working_copy empty description placeholder::(no description set)>>[39m<<log working_copy::>>[0m
     │  <<log::>>
@@ -454,9 +513,10 @@ fn test_log_builtin_templates_colored_debug() {
     │  <<log::>>
     [1m[38;5;14m<<node immutable::◆>>[0m  [1m[38;5;5m<<log change_id shortest prefix::z>>[0m[38;5;8m<<log change_id shortest rest::zzzzzzz>>[39m<<log:: >>[38;5;2m<<log root::root()>>[39m<<log:: >>[1m[38;5;4m<<log commit_id shortest prefix::0>>[0m[38;5;8m<<log commit_id shortest rest::0000000>>[39m<<log::>>
        <<log::>>
-    "#);
+    [EOF]
+    ");
 
-    insta::assert_snapshot!(render(r#"builtin_log_detailed"#), @r#"
+    insta::assert_snapshot!(render(r#"builtin_log_detailed"#), @r"
     [1m[38;5;2m<<node working_copy::@>>[0m  <<log::Commit ID: >>[38;5;4m<<log commit_id::dc31539712c7294d1d712cec63cef4504b94ca74>>[39m<<log::>>
     │  <<log::Change ID: >>[38;5;5m<<log change_id::rlvkpnrzqnoowoytxnquwvuryrwnrmlp>>[39m<<log::>>
     │  <<log::Bookmarks: >>[38;5;5m<<log local_bookmarks name::my-bookmark>>[39m<<log::>>
@@ -479,73 +539,83 @@ fn test_log_builtin_templates_colored_debug() {
        <<log::>>
        [38;5;2m<<log empty description placeholder::    (no description set)>>[39m<<log::>>
        <<log::>>
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_evolog_divergence() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description 1"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "description 1"])
+        .success();
     // No divergence
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log"]);
+    insta::assert_snapshot!(output, @r"
     @  qpvuntsm test.user@example.com 2001-02-03 08:05:08 ff309c29
     │  description 1
     ◆  zzzzzzzz root() 00000000
-    "###);
+    [EOF]
+    ");
 
     // Create divergence
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["describe", "-m", "description 2", "--at-operation", "@-"],
-    );
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["log"]);
-    insta::assert_snapshot!(stdout, @r#"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["describe", "-m", "description 2", "--at-operation", "@-"],
+        )
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["log"]);
+    insta::assert_snapshot!(output, @r"
     @  qpvuntsm?? test.user@example.com 2001-02-03 08:05:08 ff309c29
     │  description 1
     │ ○  qpvuntsm?? test.user@example.com 2001-02-03 08:05:10 6ba70e00
     ├─╯  description 2
     ◆  zzzzzzzz root() 00000000
-    "#);
-    insta::assert_snapshot!(stderr, @r###"
+    [EOF]
+    ------- stderr -------
     Concurrent modification detected, resolving automatically.
-    "###);
+    [EOF]
+    ");
 
     // Color
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--color=always"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
     [1m[38;5;2m@[0m  [1m[4m[38;5;1mq[24mpvuntsm[38;5;9m??[39m [38;5;3mtest.user@example.com[39m [38;5;14m2001-02-03 08:05:08[39m [38;5;12mf[38;5;8mf309c29[39m[0m
     │  [1mdescription 1[0m
     │ ○  [1m[4m[38;5;1mq[0m[38;5;1mpvuntsm??[39m [38;5;3mtest.user@example.com[39m [38;5;6m2001-02-03 08:05:10[39m [1m[38;5;4m6[0m[38;5;8mba70e00[39m
     ├─╯  description 2
     [1m[38;5;14m◆[0m  [1m[38;5;5mz[0m[38;5;8mzzzzzzz[39m [38;5;2mroot()[39m [1m[38;5;4m0[0m[38;5;8m0000000[39m
-    "#);
+    [EOF]
+    ");
 
     // Evolog and hidden divergent
-    let stdout = test_env.jj_cmd_success(&repo_path, &["evolog"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["evolog"]);
+    insta::assert_snapshot!(output, @r"
     @  qpvuntsm?? test.user@example.com 2001-02-03 08:05:08 ff309c29
     │  description 1
     ○  qpvuntsm hidden test.user@example.com 2001-02-03 08:05:08 485d52a9
     │  (no description set)
     ○  qpvuntsm hidden test.user@example.com 2001-02-03 08:05:07 230dd059
        (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 
     // Colored evolog
-    let stdout = test_env.jj_cmd_success(&repo_path, &["evolog", "--color=always"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["evolog", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
     [1m[38;5;2m@[0m  [1m[4m[38;5;1mq[24mpvuntsm[38;5;9m??[39m [38;5;3mtest.user@example.com[39m [38;5;14m2001-02-03 08:05:08[39m [38;5;12mf[38;5;8mf309c29[39m[0m
     │  [1mdescription 1[0m
     ○  [1m[39mq[0m[38;5;8mpvuntsm[39m hidden [38;5;3mtest.user@example.com[39m [38;5;6m2001-02-03 08:05:08[39m [1m[38;5;4m4[0m[38;5;8m85d52a9[39m
     │  [38;5;3m(no description set)[39m
     ○  [1m[39mq[0m[38;5;8mpvuntsm[39m hidden [38;5;3mtest.user@example.com[39m [38;5;6m2001-02-03 08:05:07[39m [1m[38;5;4m2[0m[38;5;8m30dd059[39m
        [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
@@ -554,7 +624,7 @@ fn test_log_bookmarks() {
     test_env.add_config("git.auto-local-bookmark = true");
     test_env.add_config(r#"revset-aliases."immutable_heads()" = "none()""#);
 
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "origin"]);
+    test_env.run_jj_in(".", ["git", "init", "origin"]).success();
     let origin_path = test_env.env_root().join("origin");
     let origin_git_repo_path = origin_path
         .join(".jj")
@@ -563,44 +633,79 @@ fn test_log_bookmarks() {
         .join("git");
 
     // Created some bookmarks on the remote
-    test_env.jj_cmd_ok(&origin_path, &["describe", "-m=description 1"]);
-    test_env.jj_cmd_ok(&origin_path, &["bookmark", "create", "bookmark1"]);
-    test_env.jj_cmd_ok(&origin_path, &["new", "root()", "-m=description 2"]);
-    test_env.jj_cmd_ok(
-        &origin_path,
-        &["bookmark", "create", "bookmark2", "unchanged"],
-    );
-    test_env.jj_cmd_ok(&origin_path, &["new", "root()", "-m=description 3"]);
-    test_env.jj_cmd_ok(&origin_path, &["bookmark", "create", "bookmark3"]);
-    test_env.jj_cmd_ok(&origin_path, &["git", "export"]);
-    test_env.jj_cmd_ok(
-        test_env.env_root(),
-        &[
-            "git",
-            "clone",
-            origin_git_repo_path.to_str().unwrap(),
-            "local",
-        ],
-    );
+    test_env
+        .run_jj_in(&origin_path, ["describe", "-m=description 1"])
+        .success();
+    test_env
+        .run_jj_in(&origin_path, ["bookmark", "create", "-r@", "bookmark1"])
+        .success();
+    test_env
+        .run_jj_in(&origin_path, ["new", "root()", "-m=description 2"])
+        .success();
+    test_env
+        .run_jj_in(
+            &origin_path,
+            ["bookmark", "create", "-r@", "bookmark2", "unchanged"],
+        )
+        .success();
+    test_env
+        .run_jj_in(&origin_path, ["new", "root()", "-m=description 3"])
+        .success();
+    test_env
+        .run_jj_in(&origin_path, ["bookmark", "create", "-r@", "bookmark3"])
+        .success();
+    test_env
+        .run_jj_in(&origin_path, ["git", "export"])
+        .success();
+    test_env
+        .run_jj_in(
+            ".",
+            [
+                "git",
+                "clone",
+                origin_git_repo_path.to_str().unwrap(),
+                "local",
+            ],
+        )
+        .success();
     let workspace_root = test_env.env_root().join("local");
 
     // Rewrite bookmark1, move bookmark2 forward, create conflict in bookmark3, add
     // new-bookmark
-    test_env.jj_cmd_ok(
-        &workspace_root,
-        &["describe", "bookmark1", "-m", "modified bookmark1 commit"],
-    );
-    test_env.jj_cmd_ok(&workspace_root, &["new", "bookmark2"]);
-    test_env.jj_cmd_ok(&workspace_root, &["bookmark", "set", "bookmark2"]);
-    test_env.jj_cmd_ok(&workspace_root, &["bookmark", "create", "new-bookmark"]);
-    test_env.jj_cmd_ok(&workspace_root, &["describe", "bookmark3", "-m=local"]);
-    test_env.jj_cmd_ok(&origin_path, &["describe", "bookmark3", "-m=origin"]);
-    test_env.jj_cmd_ok(&origin_path, &["git", "export"]);
-    test_env.jj_cmd_ok(&workspace_root, &["git", "fetch"]);
+    test_env
+        .run_jj_in(
+            &workspace_root,
+            ["describe", "bookmark1", "-m", "modified bookmark1 commit"],
+        )
+        .success();
+    test_env
+        .run_jj_in(&workspace_root, ["new", "bookmark2"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_root, ["bookmark", "set", "bookmark2", "--to=@"])
+        .success();
+    test_env
+        .run_jj_in(
+            &workspace_root,
+            ["bookmark", "create", "-r@", "new-bookmark"],
+        )
+        .success();
+    test_env
+        .run_jj_in(&workspace_root, ["describe", "bookmark3", "-m=local"])
+        .success();
+    test_env
+        .run_jj_in(&origin_path, ["describe", "bookmark3", "-m=origin"])
+        .success();
+    test_env
+        .run_jj_in(&origin_path, ["git", "export"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_root, ["git", "fetch"])
+        .success();
 
     let template = r#"commit_id.short() ++ " " ++ if(bookmarks, bookmarks, "(no bookmarks)")"#;
-    let output = test_env.jj_cmd_success(&workspace_root, &["log", "-T", template]);
-    insta::assert_snapshot!(output, @r#"
+    let output = test_env.run_jj_in(&workspace_root, ["log", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     @  a5b4d15489cc bookmark2* new-bookmark
     ○  8476341eb395 bookmark2@origin unchanged
     │ ○  fed794e2ba44 bookmark3?? bookmark3@origin
@@ -610,11 +715,12 @@ fn test_log_bookmarks() {
     │ ○  4a7e4246fc4d bookmark1*
     ├─╯
     ◆  000000000000 (no bookmarks)
-    "#);
+    [EOF]
+    ");
 
     let template = r#"bookmarks.map(|b| separate("/", b.remote(), b.name())).join(", ")"#;
-    let output = test_env.jj_cmd_success(&workspace_root, &["log", "-T", template]);
-    insta::assert_snapshot!(output, @r#"
+    let output = test_env.run_jj_in(&workspace_root, ["log", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     @  bookmark2, new-bookmark
     ○  origin/bookmark2, unchanged
     │ ○  bookmark3, origin/bookmark3
@@ -624,11 +730,12 @@ fn test_log_bookmarks() {
     │ ○  bookmark1
     ├─╯
     ◆
-    "#);
+    [EOF]
+    ");
 
     let template = r#"separate(" ", "L:", local_bookmarks, "R:", remote_bookmarks)"#;
-    let output = test_env.jj_cmd_success(&workspace_root, &["log", "-T", template]);
-    insta::assert_snapshot!(output, @r#"
+    let output = test_env.run_jj_in(&workspace_root, ["log", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     @  L: bookmark2* new-bookmark R:
     ○  L: unchanged R: bookmark2@origin unchanged@origin
     │ ○  L: bookmark3?? R: bookmark3@origin
@@ -638,7 +745,8 @@ fn test_log_bookmarks() {
     │ ○  L: bookmark1* R:
     ├─╯
     ◆  L: R:
-    "#);
+    [EOF]
+    ");
 
     let template = r#"
     remote_bookmarks.map(|ref| concat(
@@ -648,146 +756,173 @@ fn test_log_bookmarks() {
         ++ "/-" ++ ref.tracking_behind_count().lower() ++ ")"),
     ))
     "#;
-    let output = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &workspace_root,
-        &["log", "-r::remote_bookmarks()", "-T", template],
+        ["log", "-r::remote_bookmarks()", "-T", template],
     );
-    insta::assert_snapshot!(output, @r###"
+    insta::assert_snapshot!(output, @r"
     ○  bookmark3@origin(+0/-1)
     │ ○  bookmark2@origin(+0/-1) unchanged@origin(+0/-0)
     ├─╯
     │ ○  bookmark1@origin(+1/-1)
     ├─╯
     ◆
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_git_head() {
     let test_env = TestEnvironment::default();
     let repo_path = test_env.env_root().join("repo");
-    git2::Repository::init(&repo_path).unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["git", "init", "--git-repo=."]);
+    git::init(&repo_path);
+    test_env
+        .run_jj_in(&repo_path, ["git", "init", "--git-repo=."])
+        .success();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m=initial"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m=initial"])
+        .success();
     std::fs::write(repo_path.join("file"), "foo\n").unwrap();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", "git_head"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", "git_head"]);
+    insta::assert_snapshot!(output, @r"
     @  false
     ○  true
     ◆  false
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--color=always"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
     [1m[38;5;2m@[0m  [1m[38;5;13mr[38;5;8mlvkpnrz[39m [38;5;3mtest.user@example.com[39m [38;5;14m2001-02-03 08:05:09[39m [38;5;12m5[38;5;8m0aaf475[39m[0m
     │  [1minitial[0m
     ○  [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [38;5;3mtest.user@example.com[39m [38;5;6m2001-02-03 08:05:07[39m [38;5;2mgit_head()[39m [1m[38;5;4m2[0m[38;5;8m30dd059[39m
     │  [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
     [1m[38;5;14m◆[0m  [1m[38;5;5mz[0m[38;5;8mzzzzzzz[39m [38;5;2mroot()[39m [1m[38;5;4m0[0m[38;5;8m0000000[39m
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_commit_id_normal_hex() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "first"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "second"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "first"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "second"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "-T",
             r#"commit_id ++ ": " ++ commit_id.normal_hex()"#,
         ],
     );
-    insta::assert_snapshot!(stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     @  6572f22267c6f0f2bf7b8a37969ee5a7d54b8aae: 6572f22267c6f0f2bf7b8a37969ee5a7d54b8aae
     ○  222fa9f0b41347630a1371203b8aad3897d34e5f: 222fa9f0b41347630a1371203b8aad3897d34e5f
     ○  230dd059e1b059aefc0da06a2e5a7dbf22362f22: 230dd059e1b059aefc0da06a2e5a7dbf22362f22
     ◆  0000000000000000000000000000000000000000: 0000000000000000000000000000000000000000
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_change_id_normal_hex() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "first"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m", "second"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "first"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "-m", "second"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "-T",
             r#"change_id ++ ": " ++ change_id.normal_hex()"#,
         ],
     );
-    insta::assert_snapshot!(stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     @  kkmpptxzrspxrzommnulwmwkkqwworpl: ffdaa62087a280bddc5e3d3ff933b8ae
     ○  rlvkpnrzqnoowoytxnquwvuryrwnrmlp: 8e4fac809cbb3b162c953458183c8dea
     ○  qpvuntsmwlqtpsluzzsnyyzlmlwvmlnu: 9a45c67d3e96a7e5007c110ede34dec5
     ◆  zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz: 00000000000000000000000000000000
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_customize_short_id() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "first"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "first"])
+        .success();
 
     // Customize both the commit and the change id
     let decl = "template-aliases.'format_short_id(id)'";
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "--config",
             &format!(r#"{decl}='id.shortest(5).prefix().upper() ++ "_" ++ id.shortest(5).rest()'"#),
         ],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     @  Q_pvun test.user@example.com 2001-02-03 08:05:08 F_a156
     │  (empty) first
     ◆  Z_zzzz root() 0_0000
-    "###);
+    [EOF]
+    ");
 
     // Customize only the change id
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "--config=template-aliases.'format_short_change_id(id)'='format_short_id(id).upper()'",
         ],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     @  QPVUNTSM test.user@example.com 2001-02-03 08:05:08 fa15625b
     │  (empty) first
     ◆  ZZZZZZZZ root() 00000000
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_immutable() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mA", "root()"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mB"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "main"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mC"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mD", "root()"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-mA", "root()"])
+        .success();
+    test_env.run_jj_in(&repo_path, ["new", "-mB"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "main"])
+        .success();
+    test_env.run_jj_in(&repo_path, ["new", "-mC"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "-mD", "root()"])
+        .success();
 
     let template = r#"
     separate(" ",
@@ -798,22 +933,24 @@ fn test_log_immutable() {
     "#;
 
     test_env.add_config("revset-aliases.'immutable_heads()' = 'main'");
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r::", "-T", template]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r::", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     @  D
     │ ○  C
     │ ◆  B main [immutable]
     │ ◆  A [immutable]
     ├─╯
     ◆  [immutable]
-    "###);
+    [EOF]
+    ");
 
     // Suppress error that could be detected earlier
     test_env.add_config("revsets.short-prefixes = ''");
 
     test_env.add_config("revset-aliases.'immutable_heads()' = 'unknown_fn()'");
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["log", "-r::", "-T", template]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r::", "-T", template]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Config error: Invalid `revset-aliases.immutable_heads()`
     Caused by:  --> 1:1
       |
@@ -822,11 +959,14 @@ fn test_log_immutable() {
       |
       = Function `unknown_fn` doesn't exist
     For help, see https://jj-vcs.github.io/jj/latest/config/.
+    [EOF]
+    [exit status: 1]
     ");
 
     test_env.add_config("revset-aliases.'immutable_heads()' = 'unknown_symbol'");
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["log", "-r::", "-T", template]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r::", "-T", template]);
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Failed to parse template: Failed to evaluate revset
     Caused by:
     1:  --> 5:10
@@ -836,19 +976,27 @@ fn test_log_immutable() {
       |
       = Failed to evaluate revset
     2: Revision `unknown_symbol` doesn't exist
+    [EOF]
+    [exit status: 1]
     "#);
 }
 
 #[test]
 fn test_log_contained_in() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mA", "root()"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mB"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "main"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mC"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "-mD", "root()"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "-mA", "root()"])
+        .success();
+    test_env.run_jj_in(&repo_path, ["new", "-mB"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "main"])
+        .success();
+    test_env.run_jj_in(&repo_path, ["new", "-mC"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "-mD", "root()"])
+        .success();
 
     let template_for_revset = |revset: &str| {
         format!(
@@ -862,48 +1010,51 @@ fn test_log_contained_in() {
         )
     };
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "-r::",
             "-T",
             &template_for_revset(r#"description(A)::"#),
         ],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     @  D
     │ ○  C [contained_in]
     │ ○  B main [contained_in]
     │ ○  A [contained_in]
     ├─╯
     ◆
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "-r::",
             "-T",
             &template_for_revset(r#"visible_heads()"#),
         ],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     @  D [contained_in]
     │ ○  C [contained_in]
     │ ○  B main
     │ ○  A
     ├─╯
     ◆
-    "###);
+    [EOF]
+    ");
 
     // Suppress error that could be detected earlier
-    let stderr = test_env.jj_cmd_failure(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["log", "-r::", "-T", &template_for_revset("unknown_fn()")],
+        ["log", "-r::", "-T", &template_for_revset("unknown_fn()")],
     );
-    insta::assert_snapshot!(stderr, @r#"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Failed to parse template: In revset expression
     Caused by:
     1:  --> 5:28
@@ -918,13 +1069,16 @@ fn test_log_contained_in() {
       | ^--------^
       |
       = Function `unknown_fn` doesn't exist
+    [EOF]
+    [exit status: 1]
     "#);
 
-    let stderr = test_env.jj_cmd_failure(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["log", "-r::", "-T", &template_for_revset("author(x:'y')")],
+        ["log", "-r::", "-T", &template_for_revset("author(x:'y')")],
     );
-    insta::assert_snapshot!(stderr, @r#"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Failed to parse template: In revset expression
     Caused by:
     1:  --> 5:28
@@ -941,13 +1095,16 @@ fn test_log_contained_in() {
       = Invalid string pattern
     3: Invalid string pattern kind `x:`
     Hint: Try prefixing with one of `exact:`, `glob:`, `regex:`, or `substring:`
+    [EOF]
+    [exit status: 1]
     "#);
 
-    let stderr = test_env.jj_cmd_failure(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["log", "-r::", "-T", &template_for_revset("maine")],
+        ["log", "-r::", "-T", &template_for_revset("maine")],
     );
-    insta::assert_snapshot!(stderr, @r#"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Failed to parse template: Failed to evaluate revset
     Caused by:
     1:  --> 5:28
@@ -958,13 +1115,15 @@ fn test_log_contained_in() {
       = Failed to evaluate revset
     2: Revision `maine` doesn't exist
     Hint: Did you mean `main`?
+    [EOF]
+    [exit status: 1]
     "#);
 }
 
 #[test]
 fn test_short_prefix_in_transaction() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     test_env.add_config(r#"
@@ -981,32 +1140,38 @@ fn test_short_prefix_in_transaction() {
     "#);
 
     std::fs::write(repo_path.join("file"), "original file\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "initial"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "initial"])
+        .success();
 
     // Create a chain of 5 commits
     for i in 0..5 {
-        test_env.jj_cmd_ok(&repo_path, &["new", "-m", &format!("commit{i}")]);
+        test_env
+            .run_jj_in(&repo_path, ["new", "-m", &format!("commit{i}")])
+            .success();
         std::fs::write(repo_path.join("file"), format!("file {i}\n")).unwrap();
     }
     // Create 2^4 duplicates of the chain
     for _ in 0..4 {
-        test_env.jj_cmd_ok(&repo_path, &["duplicate", "description(commit)"]);
+        test_env
+            .run_jj_in(&repo_path, ["duplicate", "description(commit)"])
+            .success();
     }
 
     // Short prefix should be used for commit summary inside the transaction
     let parent_id = "58731d"; // Force id lookup to build index before mutation.
                               // If the cached index wasn't invalidated, the
                               // newly created commit wouldn't be found in it.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["new", parent_id, "--no-edit", "-m", "test"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["new", parent_id, "--no-edit", "-m", "test"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Created new commit km[kuslswpqwq] 7[4ac55dd119b] test
-    "###);
+    [EOF]
+    ");
 
     // Should match log's short prefixes
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph"]);
+    insta::assert_snapshot!(output, @r"
     km[kuslswpqwq] 7[4ac55dd119b] test
     y[qosqzytrlsw] 5[8731db5875e] commit4
     r[oyxmykxtrkr] 9[95cc897bca7] commit3
@@ -1015,12 +1180,13 @@ fn test_short_prefix_in_transaction() {
     kk[mpptxzrspx] 05[2755155952] commit0
     q[pvuntsmwlqt] e[0e22b9fae75] initial
     zz[zzzzzzzzzz] 00[0000000000]
-    "###);
+    [EOF]
+    ");
 
     test_env.add_config(r#"revsets.short-prefixes = """#);
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph"]);
+    insta::assert_snapshot!(output, @r"
     kmk[uslswpqwq] 74ac[55dd119b] test
     yq[osqzytrlsw] 587[31db5875e] commit4
     ro[yxmykxtrkr] 99[5cc897bca7] commit3
@@ -1029,19 +1195,20 @@ fn test_short_prefix_in_transaction() {
     kk[mpptxzrspx] 052[755155952] commit0
     qp[vuntsmwlqt] e0[e22b9fae75] initial
     zz[zzzzzzzzzz] 00[0000000000]
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_log_diff_predefined_formats() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file1"), "a\nb\n").unwrap();
     std::fs::write(repo_path.join("file2"), "a\n").unwrap();
     std::fs::write(repo_path.join("rename-source"), "rename").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "a\nb\nc\n").unwrap();
     std::fs::write(repo_path.join("file2"), "b\nc\n").unwrap();
     std::fs::rename(
@@ -1064,11 +1231,11 @@ fn test_log_diff_predefined_formats() {
     "#;
 
     // color, without paths
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["log", "--no-graph", "--color=always", "-r@", "-T", template],
+        ["log", "--no-graph", "--color=always", "-r@", "-T", template],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     === color_words ===
     [38;5;3mModified regular file file1:[39m
     [38;5;1m   1[39m [38;5;2m   1[39m: a
@@ -1107,14 +1274,15 @@ fn test_log_diff_predefined_formats() {
     [38;5;6mM file1[39m
     [38;5;6mM file2[39m
     [38;5;6mR {rename-source => rename-target}[39m
-    "###);
+    [EOF]
+    ");
 
     // color labels
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["log", "--no-graph", "--color=debug", "-r@", "-T", template],
+        ["log", "--no-graph", "--color=debug", "-r@", "-T", template],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     <<log::=== color_words ===>>
     [38;5;3m<<log diff color_words header::Modified regular file file1:>>[39m
     [38;5;1m<<log diff color_words removed line_number::   1>>[39m<<log diff color_words:: >>[38;5;2m<<log diff color_words added line_number::   1>>[39m<<log diff color_words::: a>>
@@ -1153,14 +1321,12 @@ fn test_log_diff_predefined_formats() {
     [38;5;6m<<log diff summary modified::M file1>>[39m
     [38;5;6m<<log diff summary modified::M file2>>[39m
     [38;5;6m<<log diff summary renamed::R {rename-source => rename-target}>>[39m
-    "###);
+    [EOF]
+    ");
 
     // cwd != workspace root
-    let stdout = test_env.jj_cmd_success(
-        test_env.env_root(),
-        &["log", "-Rrepo", "--no-graph", "-r@", "-T", template],
-    );
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r###"
+    let output = test_env.run_jj_in(".", ["log", "-Rrepo", "--no-graph", "-r@", "-T", template]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     === color_words ===
     Modified regular file repo/file1:
        1    1: a
@@ -1199,7 +1365,8 @@ fn test_log_diff_predefined_formats() {
     M repo/file1
     M repo/file2
     R repo/{rename-source => rename-target}
-    "###);
+    [EOF]
+    ");
 
     // with non-default config
     std::fs::write(
@@ -1211,9 +1378,9 @@ fn test_log_diff_predefined_formats() {
         "},
     )
     .unwrap();
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "--config-file=../config-good.toml",
             "--no-graph",
@@ -1222,7 +1389,7 @@ fn test_log_diff_predefined_formats() {
             template,
         ],
     );
-    insta::assert_snapshot!(stdout, @r"
+    insta::assert_snapshot!(output, @r"
     === color_words ===
     Modified regular file file1:
         ...
@@ -1260,6 +1427,7 @@ fn test_log_diff_predefined_formats() {
     M file1
     M file2
     R {rename-source => rename-target}
+    [EOF]
     ");
 
     // bad config
@@ -1268,15 +1436,16 @@ fn test_log_diff_predefined_formats() {
         "diff.git.context = 'not an integer'\n",
     )
     .unwrap();
-    let stderr = test_env.jj_cmd_failure(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "log",
             "--config-file=../config-bad.toml",
             "-Tself.diff().git()",
         ],
     );
-    insta::assert_snapshot!(stderr, @r#"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Failed to parse template: Failed to load diff settings
     Caused by:
     1:  --> 1:13
@@ -1289,21 +1458,24 @@ fn test_log_diff_predefined_formats() {
     3: invalid type: string "not an integer", expected usize
 
     Hint: Check the config file: ../config-bad.toml
+    [EOF]
+    [exit status: 1]
     "#);
 
     // color_words() with parameters
     let template = "self.diff('file1').color_words(0)";
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-r@", "-T", template]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-r@", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     Modified regular file file1:
         ...
             3: c
-    "###);
+    [EOF]
+    ");
 
     // git() with parameters
     let template = "self.diff('file1').git(1)";
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-r@", "-T", template]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-r@", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     diff --git a/file1 b/file1
     index 422c2b7ab3..de980441c3 100644
     --- a/file1
@@ -1311,7 +1483,8 @@ fn test_log_diff_predefined_formats() {
     @@ -2,1 +2,2 @@
      b
     +c
-    "###);
+    [EOF]
+    ");
 
     // custom template with files()
     let template = indoc! {r#"
@@ -1329,8 +1502,8 @@ fn test_log_diff_predefined_formats() {
           ) ++ "\n",
         )
     "#};
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-T", template]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     === fbad2dd53d06 ===
     file1 [modified] source=file1 [file] target=file1 [file]
     file2 [modified] source=file2 [file] target=file2 [file]
@@ -1343,6 +1516,7 @@ fn test_log_diff_predefined_formats() {
     * non-empty len=3
     === 000000000000 ===
     * empty len=0
+    [EOF]
     ");
 
     // custom diff stat template
@@ -1355,21 +1529,22 @@ fn test_log_diff_predefined_formats() {
           ) ++ "\n",
         )
     "#};
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-T", template]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     === fbad2dd53d06 ===
     * total_added=3 total_removed=1
     === 3c9b3178609b ===
     * total_added=4 total_removed=0
     === 000000000000 ===
     * total_added=0 total_removed=0
+    [EOF]
     ");
 }
 
 #[test]
 fn test_file_list_entries() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::create_dir(repo_path.join("dir")).unwrap();
@@ -1377,17 +1552,23 @@ fn test_file_list_entries() {
     std::fs::write(repo_path.join("exec-file"), "content1").unwrap();
     std::fs::write(repo_path.join("conflict-exec-file"), "content1").unwrap();
     std::fs::write(repo_path.join("conflict-file"), "content1").unwrap();
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["file", "chmod", "x", "exec-file", "conflict-exec-file"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["file", "chmod", "x", "exec-file", "conflict-exec-file"],
+        )
+        .success();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()"]);
+    test_env.run_jj_in(&repo_path, ["new", "root()"]).success();
     std::fs::write(repo_path.join("conflict-exec-file"), "content2").unwrap();
     std::fs::write(repo_path.join("conflict-file"), "content2").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["file", "chmod", "x", "conflict-exec-file"]);
+    test_env
+        .run_jj_in(&repo_path, ["file", "chmod", "x", "conflict-exec-file"])
+        .success();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "all:visible_heads()"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "all:visible_heads()"])
+        .success();
 
     let template = indoc! {r#"
         separate(" ",
@@ -1397,12 +1578,13 @@ fn test_file_list_entries() {
           "executable=" ++ executable,
         ) ++ "\n"
     "#};
-    let stdout = test_env.jj_cmd_success(&repo_path, &["file", "list", "-T", template]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&repo_path, ["file", "list", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     conflict-exec-file [conflict] conflict=true executable=true
     conflict-file [conflict] conflict=true executable=false
     dir/file [file] conflict=false executable=false
     exec-file [file] conflict=false executable=true
+    [EOF]
     ");
 }
 
@@ -1410,20 +1592,23 @@ fn test_file_list_entries() {
 #[test]
 fn test_file_list_symlink() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::os::unix::fs::symlink("symlink_target", repo_path.join("symlink")).unwrap();
 
     let template = r#"separate(" ", path, "[" ++ file_type ++ "]") ++ "\n""#;
-    let stdout = test_env.jj_cmd_success(&repo_path, &["file", "list", "-T", template]);
-    insta::assert_snapshot!(stdout, @"symlink [symlink]");
+    let output = test_env.run_jj_in(&repo_path, ["file", "list", "-T", template]);
+    insta::assert_snapshot!(output, @r"
+    symlink [symlink]
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_repo_path() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::create_dir(repo_path.join("dir")).unwrap();
@@ -1438,17 +1623,19 @@ fn test_repo_path() {
           "parent^2=" ++ if(path.parent().parent(), path.parent().parent(), "<none>"),
         ) ++ "\n"
     "#};
-    let stdout = test_env.jj_cmd_success(&repo_path, &["file", "list", "-T", template]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r"
+    let output = test_env.run_jj_in(&repo_path, ["file", "list", "-T", template]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     dir/file display=dir/file parent=dir parent^2=
     file display=file parent= parent^2=<none>
+    [EOF]
     ");
 
     let template = r#"separate(" ", path, "display=" ++ path.display()) ++ "\n""#;
-    let stdout = test_env.jj_cmd_success(&repo_path.join("dir"), &["file", "list", "-T", template]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r"
+    let output = test_env.run_jj_in(&repo_path.join("dir"), ["file", "list", "-T", template]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     dir/file display=file
     file display=../file
+    [EOF]
     ");
 }
 
@@ -1456,13 +1643,17 @@ fn test_repo_path() {
 fn test_signature_templates() {
     let test_env = TestEnvironment::default();
 
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "unsigned"]);
-    test_env.add_config("signing.sign-all = true");
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "unsigned"])
+        .success();
+    test_env.add_config("signing.behavior = 'own'");
     test_env.add_config("signing.backend = 'test'");
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "signed"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "signed"])
+        .success();
 
     let template = r#"
     if(signature,
@@ -1471,39 +1662,54 @@ fn test_signature_templates() {
     ) ++ " signature""#;
 
     // show that signatures can render
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-T", template]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-T", template]);
+    insta::assert_snapshot!(output, @r"
     @  good test-display signature
     ○  no signature
     ◆  no signature
-    "#);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["show", "-T", template]);
-    insta::assert_snapshot!(stdout, @r#"good test-display signature"#);
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["show", "-T", template]);
+    insta::assert_snapshot!(output, @"good test-display signature[EOF]");
 
     // builtin templates
     test_env.add_config("ui.show-cryptographic-signatures = true");
 
-    let args: &[_] = &["log", "-r", "..", "-T"];
+    let args = ["log", "-r", "..", "-T"];
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &[args, &["builtin_log_oneline"]].concat());
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .args(args)
+            .arg("builtin_log_oneline")
+    });
+    insta::assert_snapshot!(output, @r"
     @  rlvkpnrz test.user 2001-02-03 08:05:09 a0909ee9 [✓︎] (empty) signed
     ○  qpvuntsm test.user 2001-02-03 08:05:08 879d5d20 (empty) unsigned
     │
     ~
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &[args, &["builtin_log_compact"]].concat());
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .args(args)
+            .arg("builtin_log_compact")
+    });
+    insta::assert_snapshot!(output, @r"
     @  rlvkpnrz test.user@example.com 2001-02-03 08:05:09 a0909ee9 [✓︎]
     │  (empty) signed
     ○  qpvuntsm test.user@example.com 2001-02-03 08:05:08 879d5d20
     │  (empty) unsigned
     ~
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &[args, &["builtin_log_detailed"]].concat());
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .args(args)
+            .arg("builtin_log_detailed")
+    });
+    insta::assert_snapshot!(output, @r"
     @  Commit ID: a0909ee96bb5c66311a0c579dc8ebed4456dfc1b
     │  Change ID: rlvkpnrzqnoowoytxnquwvuryrwnrmlp
     │  Author   : Test User <test.user@example.com> (2001-02-03 08:05:09)
@@ -1519,18 +1725,23 @@ fn test_signature_templates() {
        Signature: (no signature)
 
            unsigned
-    "#);
+
+    [EOF]
+    ");
 
     // customization point
     let config_val = r#"template-aliases."format_short_cryptographic_signature(signature)"="'status: ' ++ signature.status()""#;
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &[args, &["builtin_log_oneline", "--config", config_val]].concat(),
-    );
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .args(args)
+            .arg("builtin_log_oneline")
+            .args(["--config", config_val])
+    });
+    insta::assert_snapshot!(output, @r"
     @  rlvkpnrz test.user 2001-02-03 08:05:09 a0909ee9 status: good (empty) signed
     ○  qpvuntsm test.user 2001-02-03 08:05:08 879d5d20 status: <Error: No CryptographicSignature available> (empty) unsigned
     │
     ~
-    "#);
+    [EOF]
+    ");
 }

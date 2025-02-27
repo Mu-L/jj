@@ -537,6 +537,10 @@ jj currently does not support partial clones. To use jj with this repository, tr
             }
             match err {
                 GitFetchError::NoSuchRemote(_) => user_error(err),
+                GitFetchError::RemoteWithSlash(_) => user_error_with_hint(
+                    err,
+                    "Run `jj git remote rename` to give a different name.",
+                ),
                 GitFetchError::InvalidBranchPattern(_) => user_error(err),
                 GitFetchError::InternalGitError(err) => map_git2_error(err),
                 GitFetchError::Subprocess(_) => user_error(err),
@@ -557,6 +561,10 @@ jj currently does not support partial clones. To use jj with this repository, tr
         fn from(err: GitPushError) -> Self {
             match err {
                 GitPushError::NoSuchRemote(_) => user_error(err),
+                GitPushError::RemoteWithSlash(_) => user_error_with_hint(
+                    err,
+                    "Run `jj git remote rename` to give a different name.",
+                ),
                 GitPushError::RemoteReservedForLocalGitRepo => user_error(err),
                 GitPushError::RefInUnexpectedLocation(refs) => user_error_with_hint(
                     format!(
@@ -803,6 +811,11 @@ fn revset_parse_error_hint(err: &RevsetParseError) -> Option<String> {
     // Only for the bottom error, which is usually the root cause
     let bottom_err = iter::successors(Some(err), |e| e.origin()).last().unwrap();
     match bottom_err.kind() {
+        RevsetParseErrorKind::SyntaxError => Some(
+            "See https://jj-vcs.github.io/jj/latest/revsets/ for revsets syntax, or for how to \
+             quote symbols."
+                .into(),
+        ),
         RevsetParseErrorKind::NotPrefixOperator {
             op: _,
             similar_op,

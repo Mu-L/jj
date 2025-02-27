@@ -16,13 +16,15 @@ use std::path::Path;
 
 use test_case::test_case;
 
+use crate::common::CommandOutput;
 use crate::common::TestEnvironment;
 
-fn get_log_output_with_bookmarks(test_env: &TestEnvironment, cwd: &Path) -> String {
+#[must_use]
+fn get_log_output_with_bookmarks(test_env: &TestEnvironment, cwd: &Path) -> CommandOutput {
     // Don't include commit IDs since they will be different depending on
     // whether the test runs with `jj commit` or `jj describe` + `jj new`.
     let template = r#""bookmarks{" ++ local_bookmarks ++ "} desc: " ++ description"#;
-    test_env.jj_cmd_success(cwd, &["log", "-T", template])
+    test_env.run_jj_in(cwd, ["log", "-T", template])
 }
 
 fn set_advance_bookmarks(test_env: &TestEnvironment, enabled: bool) {
@@ -48,13 +50,15 @@ type CommitFn = fn(env: &TestEnvironment, workspace_path: &Path, commit_message:
 
 // Implements CommitFn using the `jj commit` command.
 fn commit_cmd(env: &TestEnvironment, workspace_path: &Path, commit_message: &str) {
-    env.jj_cmd_ok(workspace_path, &["commit", "-m", commit_message]);
+    env.run_jj_in(workspace_path, ["commit", "-m", commit_message])
+        .success();
 }
 
 // Implements CommitFn using the `jj describe` and `jj new`.
 fn describe_new_cmd(env: &TestEnvironment, workspace_path: &Path, commit_message: &str) {
-    env.jj_cmd_ok(workspace_path, &["describe", "-m", commit_message]);
-    env.jj_cmd_ok(workspace_path, &["new"]);
+    env.run_jj_in(workspace_path, ["describe", "-m", commit_message])
+        .success();
+    env.run_jj_in(workspace_path, ["new"]).success();
 }
 
 // Check that enabling and disabling advance-bookmarks works as expected.
@@ -62,45 +66,50 @@ fn describe_new_cmd(env: &TestEnvironment, workspace_path: &Path, commit_message
 #[test_case(describe_new_cmd; "new")]
 fn test_advance_bookmarks_enabled(make_commit: CommitFn) {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     // First, test with advance-bookmarks enabled. Start by creating a bookmark on
     // the root commit.
     set_advance_bookmarks(&test_env, true);
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "-r", "@-", "test_bookmark"],
-    );
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "-r", "@-", "test_bookmark"],
+        )
+        .success();
 
     // Check the initial state of the repo.
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ◆  bookmarks{test_bookmark} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // Run jj commit, which will advance the bookmark pointing to @-.
     make_commit(&test_env, &workspace_path, "first");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // Now disable advance bookmarks and commit again. The bookmark shouldn't move.
     set_advance_bookmarks(&test_env, false);
     make_commit(&test_env, &workspace_path, "second");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: second
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 }
 
@@ -110,39 +119,52 @@ fn test_advance_bookmarks_enabled(make_commit: CommitFn) {
 #[test_case(describe_new_cmd; "new")]
 fn test_advance_bookmarks_at_minus(make_commit: CommitFn) {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     set_advance_bookmarks(&test_env, true);
-    test_env.jj_cmd_ok(&workspace_path, &["bookmark", "create", "test_bookmark"]);
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "test_bookmark", "-r", "@"],
+        )
+        .success();
 
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{test_bookmark} desc:
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     make_commit(&test_env, &workspace_path, "first");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // Create a second bookmark pointing to @. On the next commit, only the first
     // bookmark, which points to @-, will advance.
-    test_env.jj_cmd_ok(&workspace_path, &["bookmark", "create", "test_bookmark2"]);
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "test_bookmark2", "-r", "@"],
+        )
+        .success();
     make_commit(&test_env, &workspace_path, "second");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{test_bookmark test_bookmark2} desc: second
     ○  bookmarks{} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 }
 
@@ -152,31 +174,35 @@ fn test_advance_bookmarks_at_minus(make_commit: CommitFn) {
 #[test_case(describe_new_cmd; "new")]
 fn test_advance_bookmarks_overrides(make_commit: CommitFn) {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     // advance-bookmarks is disabled by default.
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "-r", "@-", "test_bookmark"],
-    );
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "-r", "@-", "test_bookmark"],
+        )
+        .success();
 
     // Check the initial state of the repo.
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ◆  bookmarks{test_bookmark} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // Commit will not advance the bookmark since advance-bookmarks is disabled.
     make_commit(&test_env, &workspace_path, "first");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: first
     ◆  bookmarks{test_bookmark} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // Now enable advance bookmarks for "test_bookmark", move the bookmark, and
@@ -186,25 +212,29 @@ fn test_advance_bookmarks_overrides(make_commit: CommitFn) {
     enabled-bookmarks = ["test_bookmark"]
     "#,
     );
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "set", "test_bookmark", "-r", "@-"],
-    );
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "set", "test_bookmark", "-r", "@-"],
+        )
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
     make_commit(&test_env, &workspace_path, "second");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: second
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // Now disable advance bookmarks for "test_bookmark" and "second_bookmark",
@@ -217,45 +247,52 @@ fn test_advance_bookmarks_overrides(make_commit: CommitFn) {
     );
     make_commit(&test_env, &workspace_path, "third");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: third
     ○  bookmarks{} desc: second
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // If we create a new bookmark at @- and move test_bookmark there as well. When
     // we commit, only "second_bookmark" will advance since "test_bookmark" is
     // disabled.
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "second_bookmark", "-r", "@-"],
-    );
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "set", "test_bookmark", "-r", "@-"],
-    );
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "second_bookmark", "-r", "@-"],
+        )
+        .success();
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "set", "test_bookmark", "-r", "@-"],
+        )
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{second_bookmark test_bookmark} desc: third
     ○  bookmarks{} desc: second
     ○  bookmarks{} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
     make_commit(&test_env, &workspace_path, "fourth");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: fourth
     ○  bookmarks{second_bookmark test_bookmark} desc: third
     ○  bookmarks{} desc: second
     ○  bookmarks{} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 }
 
@@ -264,35 +301,41 @@ fn test_advance_bookmarks_overrides(make_commit: CommitFn) {
 #[test_case(describe_new_cmd; "new")]
 fn test_advance_bookmarks_multiple_bookmarks(make_commit: CommitFn) {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     set_advance_bookmarks(&test_env, true);
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "-r", "@-", "first_bookmark"],
-    );
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "-r", "@-", "second_bookmark"],
-    );
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "-r", "@-", "first_bookmark"],
+        )
+        .success();
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "-r", "@-", "second_bookmark"],
+        )
+        .success();
 
     insta::allow_duplicates! {
     // Check the initial state of the repo.
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ◆  bookmarks{first_bookmark second_bookmark} desc:
-    "###);
+    [EOF]
+    ");
     }
 
     // Both bookmarks are eligible and both will advance.
     make_commit(&test_env, &workspace_path, "first");
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{first_bookmark second_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
     }
 }
 
@@ -301,149 +344,191 @@ fn test_advance_bookmarks_multiple_bookmarks(make_commit: CommitFn) {
 #[test]
 fn test_new_advance_bookmarks_interior() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     set_advance_bookmarks(&test_env, true);
 
     // Check the initial state of the repo.
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 
     // Create a gap in the commits for us to insert our new commit with --before.
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m", "first"]);
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m", "second"]);
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m", "third"]);
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "-r", "@---", "test_bookmark"],
-    );
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m", "first"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m", "second"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m", "third"])
+        .success();
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "-r", "@---", "test_bookmark"],
+        )
+        .success();
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: third
     ○  bookmarks{} desc: second
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 
-    test_env.jj_cmd_ok(&workspace_path, &["new", "-r", "@--"]);
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["new", "-r", "@--"])
+        .success();
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     │ ○  bookmarks{} desc: third
     ├─╯
     ○  bookmarks{test_bookmark} desc: second
     ○  bookmarks{} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 }
 
 // If the `--before` flag is passed to `jj new`, bookmarks are not advanced.
 #[test]
 fn test_new_advance_bookmarks_before() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     set_advance_bookmarks(&test_env, true);
 
     // Check the initial state of the repo.
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 
     // Create a gap in the commits for us to insert our new commit with --before.
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m", "first"]);
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m", "second"]);
-    test_env.jj_cmd_ok(&workspace_path, &["commit", "-m", "third"]);
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "-r", "@---", "test_bookmark"],
-    );
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m", "first"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m", "second"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_path, ["commit", "-m", "third"])
+        .success();
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "-r", "@---", "test_bookmark"],
+        )
+        .success();
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: third
     ○  bookmarks{} desc: second
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 
-    test_env.jj_cmd_ok(&workspace_path, &["new", "--before", "@-"]);
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["new", "--before", "@-"])
+        .success();
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     ○  bookmarks{} desc: third
     @  bookmarks{} desc:
     ○  bookmarks{} desc: second
     ○  bookmarks{test_bookmark} desc: first
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 }
 
 // If the `--after` flag is passed to `jj new`, bookmarks are not advanced.
 #[test]
 fn test_new_advance_bookmarks_after() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     set_advance_bookmarks(&test_env, true);
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["bookmark", "create", "-r", "@-", "test_bookmark"],
-    );
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            ["bookmark", "create", "-r", "@-", "test_bookmark"],
+        )
+        .success();
 
     // Check the initial state of the repo.
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ◆  bookmarks{test_bookmark} desc:
-    "###);
+    [EOF]
+    ");
 
-    test_env.jj_cmd_ok(&workspace_path, &["describe", "-m", "first"]);
-    test_env.jj_cmd_ok(&workspace_path, &["new", "--after", "@"]);
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["describe", "-m", "first"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_path, ["new", "--after", "@"])
+        .success();
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc:
     ○  bookmarks{} desc: first
     ◆  bookmarks{test_bookmark} desc:
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_new_advance_bookmarks_merge_children() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     set_advance_bookmarks(&test_env, true);
-    test_env.jj_cmd_ok(&workspace_path, &["desc", "-m", "0"]);
-    test_env.jj_cmd_ok(&workspace_path, &["new", "-m", "1"]);
-    test_env.jj_cmd_ok(&workspace_path, &["new", "description(0)", "-m", "2"]);
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &[
-            "bookmark",
-            "create",
-            "test_bookmark",
-            "-r",
-            "description(0)",
-        ],
-    );
+    test_env
+        .run_jj_in(&workspace_path, ["desc", "-m", "0"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_path, ["new", "-m", "1"])
+        .success();
+    test_env
+        .run_jj_in(&workspace_path, ["new", "description(0)", "-m", "2"])
+        .success();
+    test_env
+        .run_jj_in(
+            &workspace_path,
+            [
+                "bookmark",
+                "create",
+                "test_bookmark",
+                "-r",
+                "description(0)",
+            ],
+        )
+        .success();
 
     // Check the initial state of the repo.
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @  bookmarks{} desc: 2
     │ ○  bookmarks{} desc: 1
     ├─╯
     ○  bookmarks{test_bookmark} desc: 0
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 
     // The bookmark won't advance because `jj  new` had multiple targets.
-    test_env.jj_cmd_ok(
-        &workspace_path,
-        &["new", "description(1)", "description(2)"],
-    );
-    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r###"
+    test_env
+        .run_jj_in(&workspace_path, ["new", "description(1)", "description(2)"])
+        .success();
+    insta::assert_snapshot!(get_log_output_with_bookmarks(&test_env, &workspace_path), @r"
     @    bookmarks{} desc:
     ├─╮
     │ ○  bookmarks{} desc: 2
@@ -451,5 +536,6 @@ fn test_new_advance_bookmarks_merge_children() {
     ├─╯
     ○  bookmarks{test_bookmark} desc: 0
     ◆  bookmarks{} desc:
-    "###);
+    [EOF]
+    ");
 }

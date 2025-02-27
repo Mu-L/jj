@@ -14,14 +14,12 @@
 
 use jj_lib::secret_backend::SecretBackend;
 
-use crate::common::get_stderr_string;
-use crate::common::get_stdout_string;
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_diff() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::create_dir(repo_path.join("dir")).unwrap();
@@ -30,7 +28,7 @@ fn test_diff() {
     std::fs::write(repo_path.join("dir").join("secret"), "foo\n").unwrap();
     std::fs::write(repo_path.join("modified-secret"), "foo\n").unwrap();
     std::fs::write(repo_path.join("z-last"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("a-first"), "bar\n").unwrap();
     std::fs::remove_file(repo_path.join("deleted-secret")).unwrap();
     std::fs::write(repo_path.join("added-secret"), "bar\n").unwrap();
@@ -40,8 +38,8 @@ fn test_diff() {
 
     SecretBackend::adopt_git_repo(&repo_path);
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["diff", "--color-words"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r###"
+    let output = test_env.run_jj_in(&repo_path, ["diff", "--color-words"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     Modified regular file a-first:
        1    1: foobar
     Access denied to added-secret: No access
@@ -50,27 +48,30 @@ fn test_diff() {
     Access denied to modified-secret: No access
     Modified regular file z-last:
        1    1: foobar
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["diff", "--summary"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r###"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["diff", "--summary"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     M a-first
     C {a-first => added-secret}
     D deleted-secret
     M dir/secret
     M modified-secret
     M z-last
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["diff", "--types"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r###"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["diff", "--types"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     FF a-first
     FF {a-first => added-secret}
     F- deleted-secret
     FF dir/secret
     FF modified-secret
     FF z-last
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["diff", "--stat"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r###"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["diff", "--stat"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     a-first                   | 2 +-
     {a-first => added-secret} | 2 +-
     deleted-secret            | 1 -
@@ -78,12 +79,10 @@ fn test_diff() {
     modified-secret           | 0
     z-last                    | 2 +-
     6 files changed, 3 insertions(+), 4 deletions(-)
-    "###);
-    let assert = test_env
-        .jj_cmd(&repo_path, &["diff", "--git"])
-        .assert()
-        .failure();
-    insta::assert_snapshot!(get_stdout_string(&assert).replace('\\', "/"), @r###"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["diff", "--git"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     diff --git a/a-first b/a-first
     index 257cc5642c..5716ca5987 100644
     --- a/a-first
@@ -91,11 +90,13 @@ fn test_diff() {
     @@ -1,1 +1,1 @@
     -foo
     +bar
-    "###);
-    insta::assert_snapshot!(get_stderr_string(&assert), @r#"
+    [EOF]
+    ------- stderr -------
     Error: Access denied to added-secret
     Caused by: No access
-    "#);
+    [EOF]
+    [exit status: 1]
+    ");
 
     // TODO: Test external tool
 }
@@ -103,7 +104,7 @@ fn test_diff() {
 #[test]
 fn test_file_list_show() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("a-first"), "foo\n").unwrap();
@@ -113,20 +114,21 @@ fn test_file_list_show() {
     SecretBackend::adopt_git_repo(&repo_path);
 
     // "file list" should just work since it doesn't access file content
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["file", "list"]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&repo_path, ["file", "list"]);
+    insta::assert_snapshot!(output, @r"
     a-first
     secret
     z-last
+    [EOF]
     ");
-    insta::assert_snapshot!(stderr, @"");
 
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["file", "show", "."]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r###"
+    let output = test_env.run_jj_in(&repo_path, ["file", "show", "."]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     foo
     baz
-    "###);
-    insta::assert_snapshot!(stderr.replace('\\', "/"), @r###"
+    [EOF]
+    ------- stderr -------
     Warning: Path 'secret' exists but access is denied: No access
-    "###);
+    [EOF]
+    ");
 }

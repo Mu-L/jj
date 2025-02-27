@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use clap::builder::NonEmptyStringValueParser;
 use clap_complete::ArgValueCandidates;
 use jj_lib::object_id::ObjectId as _;
 use jj_lib::op_store::RefTarget;
+use jj_lib::revset;
 
 use super::has_tracked_remote_bookmarks;
 use crate::cli_util::CommandHelper;
@@ -28,10 +28,13 @@ use crate::ui::Ui;
 /// Create a new bookmark
 #[derive(clap::Args, Clone, Debug)]
 pub struct BookmarkCreateArgs {
+    // TODO(#5374): Make required in jj 0.32+
     /// The bookmark's target revision
     //
     // The `--to` alias exists for making it easier for the user to switch
-    // between `bookmark create`, `bookmark move`, and `bookmark set`.
+    // between `bookmark create`, `bookmark move`, and `bookmark set`. Currently target revision
+    // defaults to the working copy if not specified, but in the near future it will be required to
+    // explicitly specify it.
     #[arg(
         long, short,
         visible_alias = "to",
@@ -41,7 +44,7 @@ pub struct BookmarkCreateArgs {
     revision: Option<RevisionArg>,
 
     /// The bookmarks to create
-    #[arg(required = true, value_parser = NonEmptyStringValueParser::new())]
+    #[arg(required = true, value_parser = revset::parse_symbol)]
     names: Vec<String>,
 }
 
@@ -51,6 +54,13 @@ pub fn cmd_bookmark_create(
     args: &BookmarkCreateArgs,
 ) -> Result<(), CommandError> {
     let mut workspace_command = command.workspace_helper(ui)?;
+    if args.revision.is_none() {
+        writeln!(
+            ui.warning_default(),
+            "Target revision was not specified, defaulting to the working copy (-r@). In the near \
+             future it will be required to explicitly specify target revision."
+        )?;
+    }
     let target_commit = workspace_command
         .resolve_single_rev(ui, args.revision.as_ref().unwrap_or(&RevisionArg::AT))?;
     let view = workspace_command.repo().view();
@@ -90,10 +100,6 @@ pub fn cmd_bookmark_create(
         tx.write_commit_summary(formatter.as_mut(), &target_commit)?;
         writeln!(formatter)?;
     }
-    if bookmark_names.len() > 1 && args.revision.is_none() {
-        writeln!(ui.hint_default(), "Use -r to specify the target revision.")?;
-    }
-
     tx.finish(
         ui,
         format!(

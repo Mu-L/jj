@@ -343,6 +343,15 @@ To prevent rewriting commits authored by other users:
 Ancestors of the configured set are also immutable. The root commit is always
 immutable even if the set is empty.
 
+Immutable commits (other than the root commit) can be rewritten using the
+`--ignore-immutable` CLI flag.
+
+!!! warning
+
+    Using `--ignore-immutable` will allow you to rewrite any commit in the
+    history, and all descendants, without warning. Use this power wisely, and
+    remember `jj undo`.
+
 ### Behavior of prev and next commands
 
 If you prefer using an "edit-based" workflow, rather than squashing
@@ -463,6 +472,14 @@ To customize these separately, use the `format_short_commit_id()` and
 [template-aliases]
 # Uppercase change ids. `jj` treats change and commit ids as case-insensitive.
 'format_short_change_id(id)' = 'format_short_id(id).upper()'
+```
+
+Operation ids can be customized by the `format_short_operation_id()` alias:
+
+```toml
+[template-aliases]
+# Always show 12 characters
+'format_short_operation_id(id)' = 'id.short(12)'
 ```
 
 To get shorter prefixes for certain revisions, set `revsets.short-prefixes`:
@@ -1120,7 +1137,7 @@ Setting the backend to `"none"` disables signing.
 
 ```toml
 [signing]
-sign-all = true
+behavior = "own"
 backend = "gpg"
 key = "4ED556E9729E000F"
 ## You can set `key` to anything accepted by `gpg -u`
@@ -1147,7 +1164,7 @@ backends.gpg.allow-expired-keys = false
 
 ```toml
 [signing]
-sign-all = true
+behavior = "own"
 backend = "ssh"
 key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGj+J6N6SO+4P8dOZqfR1oiay2yxhhHnagH52avUqw5h"
 ## You can also use a path instead of embedding the key
@@ -1176,16 +1193,17 @@ backends.ssh.allowed-signers = "/path/to/allowed-signers"
 
 ### Sign commits only on `jj git push`
 
-Instead of signing all commits during creation when `signing.sign-all` is
-set to `true`, the `git.sign-on-push` configuration can be used to sign
+Instead of signing all commits during creation when `signing.behavior` is
+set to `own`, the `git.sign-on-push` configuration can be used to sign
 commits only upon running `jj git push`. All mutable unsigned commits
 being pushed will be signed prior to pushing. This might be preferred if the
 signing backend requires user interaction or is slow, so that signing is
 performed in a single batch operation.
 
 ```toml
-# Configure signing backend as before, without setting `signing.sign-all`
+# Configure signing backend as before, but lazily signing only on push.
 [signing]
+behavior = "drop"
 backend = "ssh"
 key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGj+J6N6SO+4P8dOZqfR1oiay2yxhhHnagH52avUqw5h"
 
@@ -1193,6 +1211,18 @@ key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGj+J6N6SO+4P8dOZqfR1oiay2yxhhHnagH52
 sign-on-push = true
 ```
 
+### Manually signing commits
+
+You can use [`jj sign`](./cli-reference.md#jj-sign)/[`jj unsign`](./cli-reference.md#jj-unsign)
+to sign/unsign commits manually.
+
+
+!!! warning
+
+    `jj sign` is always signing commits, even if they are already signed by the
+    user. While this is cumbersome for users signing via hardware devices, we
+    cannot reliably check if a commit is already signed without creating a
+    signature (see [this issue](https://github.com/jj-vcs/jj/issues/5786)).
 
 ## Commit Signature Verification
 
@@ -1452,9 +1482,6 @@ Here are some popular editors with TOML schema validation support:
 
 - JetBrains IDEs (IntelliJ, PyCharm, etc)
   - Install [TOML](https://plugins.jetbrains.com/plugin/8195-toml) plugin
-
-- Sublime Text
-  - Install [LSP](https://packagecontrol.io/packages/LSP) and [LSP-taplo](https://packagecontrol.io/packages/LSP-taplo)
 
 - Emacs
   - Install [lsp-mode](https://github.com/emacs-lsp/lsp-mode) and [toml-mode](https://github.com/dryman/toml-mode.el)

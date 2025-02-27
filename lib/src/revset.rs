@@ -46,12 +46,15 @@ use crate::object_id::PrefixResolution;
 use crate::op_store::RemoteRefState;
 use crate::op_store::WorkspaceId;
 use crate::op_walk;
+use crate::refs::RemoteRefSymbol;
+use crate::refs::RemoteRefSymbolBuf;
 use crate::repo::ReadonlyRepo;
 use crate::repo::Repo;
 use crate::repo::RepoLoaderError;
 use crate::repo_path::RepoPathUiConverter;
 use crate::revset_parser;
 pub use crate::revset_parser::expect_literal;
+pub use crate::revset_parser::parse_symbol;
 pub use crate::revset_parser::BinaryOp;
 pub use crate::revset_parser::ExpressionKind;
 pub use crate::revset_parser::ExpressionNode;
@@ -127,10 +130,7 @@ pub enum RevsetCommitRef {
     WorkingCopy(WorkspaceId),
     WorkingCopies,
     Symbol(String),
-    RemoteSymbol {
-        name: String,
-        remote: String,
-    },
+    RemoteSymbol(RemoteRefSymbolBuf),
     Bookmarks(StringPattern),
     RemoteBookmarks {
         bookmark_pattern: StringPattern,
@@ -333,8 +333,8 @@ impl<St: ExpressionState<CommitRef = RevsetCommitRef>> RevsetExpression<St> {
         Rc::new(Self::CommitRef(RevsetCommitRef::Symbol(value)))
     }
 
-    pub fn remote_symbol(name: String, remote: String) -> Rc<Self> {
-        let commit_ref = RevsetCommitRef::RemoteSymbol { name, remote };
+    pub fn remote_symbol(value: RemoteRefSymbolBuf) -> Rc<Self> {
+        let commit_ref = RevsetCommitRef::RemoteSymbol(value);
         Rc::new(Self::CommitRef(commit_ref))
     }
 
@@ -1118,10 +1118,7 @@ pub fn lower_expression(
             },
             node.span,
         )),
-        ExpressionKind::RemoteSymbol { name, remote } => Ok(RevsetExpression::remote_symbol(
-            name.to_owned(),
-            remote.to_owned(),
-        )),
+        ExpressionKind::RemoteSymbol(symbol) => Ok(RevsetExpression::remote_symbol(symbol.clone())),
         ExpressionKind::AtWorkspace(name) => Ok(RevsetExpression::working_copy(WorkspaceId::new(
             name.to_owned(),
         ))),
@@ -1878,8 +1875,8 @@ fn reload_repo_at_operation(
     })
 }
 
-fn resolve_remote_bookmark(repo: &dyn Repo, name: &str, remote: &str) -> Option<Vec<CommitId>> {
-    let target = &repo.view().get_remote_bookmark(name, remote).target;
+fn resolve_remote_bookmark(repo: &dyn Repo, symbol: RemoteRefSymbol<'_>) -> Option<Vec<CommitId>> {
+    let target = &repo.view().get_remote_bookmark(symbol).target;
     target
         .is_present()
         .then(|| target.added_ids().cloned().collect())
@@ -2159,10 +2156,8 @@ fn resolve_commit_ref(
 ) -> Result<Vec<CommitId>, RevsetResolutionError> {
     match commit_ref {
         RevsetCommitRef::Symbol(symbol) => symbol_resolver.resolve_symbol(repo, symbol),
-        RevsetCommitRef::RemoteSymbol { name, remote } => {
-            resolve_remote_bookmark(repo, name, remote)
-                .ok_or_else(|| make_no_such_symbol_error(repo, format_remote_symbol(name, remote)))
-        }
+        RevsetCommitRef::RemoteSymbol(symbol) => resolve_remote_bookmark(repo, symbol.as_ref())
+            .ok_or_else(|| make_no_such_symbol_error(repo, symbol.to_string())),
         RevsetCommitRef::WorkingCopy(workspace_id) => {
             if let Some(commit_id) = repo.view().get_wc_commit_id(workspace_id) {
                 Ok(vec![commit_id.clone()])
@@ -2197,7 +2192,7 @@ fn resolve_commit_ref(
                 .filter(|(_, remote_ref)| {
                     remote_ref_state.map_or(true, |state| remote_ref.state == state)
                 })
-                .filter(|&((_, remote_name), _)| !crate::git::is_special_git_remote(remote_name))
+                .filter(|&(symbol, _)| !crate::git::is_special_git_remote(symbol.remote))
                 .flat_map(|(_, remote_ref)| remote_ref.target.added_ids())
                 .cloned()
                 .collect();
