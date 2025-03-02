@@ -17,55 +17,59 @@ use crate::common::TestEnvironment;
 #[test]
 fn test_interdiff_basic() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file1"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file2"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "left"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "left"])
+        .success();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()"]);
+    test_env.run_jj_in(&repo_path, ["new", "root()"]).success();
     std::fs::write(repo_path.join("file3"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file2"), "foo\nbar\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "right"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "right"])
+        .success();
 
     // implicit --to
-    let stdout = test_env.jj_cmd_success(&repo_path, &["interdiff", "--from", "left"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["interdiff", "--from", "left"]);
+    insta::assert_snapshot!(output, @r"
     Modified regular file file2:
        1    1: foo
             2: bar
-    "###);
+    [EOF]
+    ");
 
     // explicit --to
-    test_env.jj_cmd_ok(&repo_path, &["new", "@-"]);
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &["interdiff", "--from", "left", "--to", "right"],
-    );
-    insta::assert_snapshot!(stdout, @r###"
+    test_env.run_jj_in(&repo_path, ["new", "@-"]).success();
+    let output = test_env.run_jj_in(&repo_path, ["interdiff", "--from", "left", "--to", "right"]);
+    insta::assert_snapshot!(output, @r"
     Modified regular file file2:
        1    1: foo
             2: bar
-    "###);
-    test_env.jj_cmd_ok(&repo_path, &["undo"]);
+    [EOF]
+    ");
+    test_env.run_jj_in(&repo_path, ["undo"]).success();
 
     // formats specifiers
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["interdiff", "--from", "left", "--to", "right", "-s"],
+        ["interdiff", "--from", "left", "--to", "right", "-s"],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     M file2
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["interdiff", "--from", "left", "--to", "right", "--git"],
+        ["interdiff", "--from", "left", "--to", "right", "--git"],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     diff --git a/file2 b/file2
     index 257cc5642c..3bd1f0e297 100644
     --- a/file2
@@ -73,42 +77,48 @@ fn test_interdiff_basic() {
     @@ -1,1 +1,2 @@
      foo
     +bar
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_interdiff_paths() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file1"), "foo\n").unwrap();
     std::fs::write(repo_path.join("file2"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "bar\n").unwrap();
     std::fs::write(repo_path.join("file2"), "bar\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "left"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "left"])
+        .success();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()"]);
+    test_env.run_jj_in(&repo_path, ["new", "root()"]).success();
     std::fs::write(repo_path.join("file1"), "foo\n").unwrap();
     std::fs::write(repo_path.join("file2"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file1"), "baz\n").unwrap();
     std::fs::write(repo_path.join("file2"), "baz\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "right"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "right"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["interdiff", "--from", "left", "--to", "right", "file1"],
+        ["interdiff", "--from", "left", "--to", "right", "file1"],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     Modified regular file file1:
        1    1: barbaz
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "interdiff",
             "--from",
             "left",
@@ -118,36 +128,41 @@ fn test_interdiff_paths() {
             "file2",
         ],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     Modified regular file file1:
        1    1: barbaz
     Modified regular file file2:
        1    1: barbaz
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_interdiff_conflicting() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file"), "foo\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file"), "bar\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "left"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "left"])
+        .success();
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()"]);
+    test_env.run_jj_in(&repo_path, ["new", "root()"]).success();
     std::fs::write(repo_path.join("file"), "abc\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(repo_path.join("file"), "def\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "right"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "right"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["interdiff", "--from", "left", "--to", "right", "--git"],
+        ["interdiff", "--from", "left", "--to", "right", "--git"],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     diff --git a/file b/file
     index 0000000000..24c5735c3e 100644
     --- a/file
@@ -161,5 +176,6 @@ fn test_interdiff_conflicting() {
     -bar
     ->>>>>>> Conflict 1 of 1 ends
     +def
-    "###);
+    [EOF]
+    ");
 }

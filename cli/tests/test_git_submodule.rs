@@ -12,14 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use testutils::git;
+
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_gitsubmodule_print_gitmodules() {
     let test_env = TestEnvironment::default();
     let workspace_root = test_env.env_root().join("repo");
-    git2::Repository::init(&workspace_root).unwrap();
-    test_env.jj_cmd_ok(&workspace_root, &["git", "init", "--git-repo", "."]);
+    git::init(&workspace_root);
+    test_env
+        .run_jj_in(&workspace_root, ["git", "init", "--git-repo", "."])
+        .success();
 
     std::fs::write(
         workspace_root.join(".gitmodules"),
@@ -31,7 +35,7 @@ fn test_gitsubmodule_print_gitmodules() {
     )
     .unwrap();
 
-    test_env.jj_cmd_ok(&workspace_root, &["new"]);
+    test_env.run_jj_in(&workspace_root, ["new"]).success();
 
     std::fs::write(
         workspace_root.join(".gitmodules"),
@@ -43,23 +47,26 @@ fn test_gitsubmodule_print_gitmodules() {
     )
     .unwrap();
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &workspace_root,
-        &["git", "submodule", "print-gitmodules", "-r", "@-"],
+        ["git", "submodule", "print-gitmodules", "-r", "@-"],
     );
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     name:old
     url:https://github.com/old/old.git
     path:old
 
 
-    "###);
+    [EOF]
+    ");
 
-    let stdout =
-        test_env.jj_cmd_success(&workspace_root, &["git", "submodule", "print-gitmodules"]);
-    insta::assert_snapshot!(stdout, @r###"
-	name:new
-	url:https://github.com/new/new.git
-	path:new
-    "###);
+    let output = test_env.run_jj_in(&workspace_root, ["git", "submodule", "print-gitmodules"]);
+    insta::assert_snapshot!(output, @r"
+    name:new
+    url:https://github.com/new/new.git
+    path:new
+
+
+    [EOF]
+    ");
 }

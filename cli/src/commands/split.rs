@@ -83,15 +83,18 @@ pub(crate) fn cmd_split(
     args: &SplitArgs,
 ) -> Result<(), CommandError> {
     let mut workspace_command = command.workspace_helper(ui)?;
-    let commit = workspace_command.resolve_single_rev(ui, &args.revision)?;
-    if commit.is_empty(workspace_command.repo().as_ref())? {
+    let target_commit = workspace_command.resolve_single_rev(ui, &args.revision)?;
+    if target_commit.is_empty(workspace_command.repo().as_ref())? {
         return Err(user_error_with_hint(
-            format!("Refusing to split empty commit {}.", commit.id().hex()),
+            format!(
+                "Refusing to split empty commit {}.",
+                target_commit.id().hex()
+            ),
             "Use `jj new` if you want to create another empty commit.",
         ));
     }
 
-    workspace_command.check_rewritable([commit.id()])?;
+    workspace_command.check_rewritable([target_commit.id()])?;
     let matcher = workspace_command
         .parse_file_patterns(ui, &args.paths)?
         .to_matcher();
@@ -102,8 +105,8 @@ pub(crate) fn cmd_split(
     )?;
     let text_editor = workspace_command.text_editor()?;
     let mut tx = workspace_command.start_transaction();
-    let end_tree = commit.tree()?;
-    let base_tree = commit.parent_tree(tx.repo())?;
+    let end_tree = target_commit.tree()?;
+    let base_tree = target_commit.parent_tree(tx.repo())?;
     let format_instructions = || {
         format!(
             "\
@@ -114,14 +117,14 @@ The diff initially shows the changes in the commit you're splitting.
 Adjust the right side until it shows the contents you want for the first commit.
 The remainder will be in the second commit.
 ",
-            tx.format_commit_summary(&commit)
+            tx.format_commit_summary(&target_commit)
         )
     };
 
     // Prompt the user to select the changes they want for the first commit.
     let selected_tree_id =
         diff_selector.select(&base_tree, &end_tree, matcher.as_ref(), format_instructions)?;
-    if &selected_tree_id == commit.tree_id() {
+    if &selected_tree_id == target_commit.tree_id() {
         // The user selected everything from the original commit.
         writeln!(
             ui.warning_default(),
@@ -138,7 +141,7 @@ The remainder will be in the second commit.
     // Create the first commit, which includes the changes selected by the user.
     let selected_tree = tx.repo().store().get_root_tree(&selected_tree_id)?;
     let first_commit = {
-        let mut commit_builder = tx.repo_mut().rewrite_commit(&commit).detach();
+        let mut commit_builder = tx.repo_mut().rewrite_commit(&target_commit).detach();
         commit_builder.set_tree_id(selected_tree_id);
         if commit_builder.description().is_empty() {
             commit_builder.set_description(tx.settings().get_string("ui.default-description")?);
@@ -167,18 +170,18 @@ The remainder will be in the second commit.
             end_tree
         };
         let parents = if args.parallel {
-            commit.parent_ids().to_vec()
+            target_commit.parent_ids().to_vec()
         } else {
             vec![first_commit.id().clone()]
         };
-        let mut commit_builder = tx.repo_mut().rewrite_commit(&commit).detach();
+        let mut commit_builder = tx.repo_mut().rewrite_commit(&target_commit).detach();
         commit_builder
             .set_parents(parents)
             .set_tree_id(new_tree.id())
             // Generate a new change id so that the commit being split doesn't
             // become divergent.
             .generate_new_change_id();
-        let description = if commit.description().is_empty() {
+        let description = if target_commit.description().is_empty() {
             // If there was no description before, don't ask for one for the
             // second commit.
             "".to_string()
@@ -196,26 +199,37 @@ The remainder will be in the second commit.
         commit_builder.write(tx.repo_mut())?
     };
 
-    // Mark the commit being split as rewritten to the second commit. As a
-    // result, if @ points to the commit being split, it will point to the
-    // second commit after the command finishes. This also means that any
-    // bookmarks pointing to the commit being split are moved to the second
-    // commit.
-    tx.repo_mut()
-        .set_rewritten_commit(commit.id().clone(), second_commit.id().clone());
+    let legacy_bookmark_behavior = tx.settings().get_bool("split.legacy-bookmark-behavior")?;
+    if legacy_bookmark_behavior {
+        // Mark the commit being split as rewritten to the second commit. This
+        // moves any bookmarks pointing to the target commit to the second
+        // commit.
+        tx.repo_mut()
+            .set_rewritten_commit(target_commit.id().clone(), second_commit.id().clone());
+    }
     let mut num_rebased = 0;
     tx.repo_mut()
-        .transform_descendants(vec![commit.id().clone()], |mut rewriter| {
+        .transform_descendants(vec![target_commit.id().clone()], |mut rewriter| {
             num_rebased += 1;
-            if args.parallel {
+            if args.parallel && legacy_bookmark_behavior {
+                // The old_parent is the second commit due to the rewrite above.
                 rewriter
                     .replace_parent(second_commit.id(), [first_commit.id(), second_commit.id()]);
+            } else if args.parallel {
+                rewriter.replace_parent(first_commit.id(), [first_commit.id(), second_commit.id()]);
+            } else {
+                rewriter.replace_parent(first_commit.id(), [second_commit.id()]);
             }
-            // We don't need to do anything special for the non-parallel case
-            // since we already marked the original commit as rewritten.
             rewriter.rebase()?.write()?;
             Ok(())
         })?;
+    // Move the working copy commit (@) to the second commit for any workspaces
+    // where the target commit is the working copy commit.
+    for (workspace_id, working_copy_commit) in tx.base_repo().clone().view().wc_commit_ids() {
+        if working_copy_commit == target_commit.id() {
+            tx.repo_mut().edit(workspace_id.clone(), &second_commit)?;
+        }
+    }
 
     if let Some(mut formatter) = ui.status_formatter() {
         if num_rebased > 0 {
@@ -227,6 +241,6 @@ The remainder will be in the second commit.
         tx.write_commit_summary(formatter.as_mut(), &second_commit)?;
         writeln!(formatter)?;
     }
-    tx.finish(ui, format!("split commit {}", commit.id().hex()))?;
+    tx.finish(ui, format!("split commit {}", target_commit.id().hex()))?;
     Ok(())
 }
