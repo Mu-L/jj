@@ -12,77 +12,102 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use testutils::git;
+
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_tag_list() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     let git_repo = {
         let mut git_repo_path = repo_path.clone();
         git_repo_path.extend([".jj", "repo", "store", "git"]);
-        git2::Repository::open(git_repo_path).unwrap()
+        git::open(git_repo_path)
     };
 
-    let copy_ref = |src_name: &str, dest_name: &str| {
+    let copy_ref = |src_name: &str, tag_name: &str| {
         let src = git_repo.find_reference(src_name).unwrap();
-        let oid = src.target().unwrap();
-        git_repo.reference(dest_name, oid, true, "").unwrap();
+        git_repo
+            .tag_reference(
+                tag_name,
+                src.target().id(),
+                gix::refs::transaction::PreviousValue::Any,
+            )
+            .unwrap();
     };
 
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()", "-mcommit1"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "bookmark1"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()", "-mcommit2"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "bookmark2"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()", "-mcommit3"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "bookmark3"]);
-    test_env.jj_cmd_ok(&repo_path, &["git", "export"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "root()", "-mcommit1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "bookmark1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "root()", "-mcommit2"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "bookmark2"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "root()", "-mcommit3"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "bookmark3"])
+        .success();
+    test_env.run_jj_in(&repo_path, ["git", "export"]).success();
 
-    copy_ref("refs/heads/bookmark1", "refs/tags/test_tag");
-    copy_ref("refs/heads/bookmark2", "refs/tags/test_tag2");
-    copy_ref("refs/heads/bookmark1", "refs/tags/conflicted_tag");
-    test_env.jj_cmd_ok(&repo_path, &["git", "import"]);
-    copy_ref("refs/heads/bookmark2", "refs/tags/conflicted_tag");
-    test_env.jj_cmd_ok(&repo_path, &["git", "import"]);
-    copy_ref("refs/heads/bookmark3", "refs/tags/conflicted_tag");
-    test_env.jj_cmd_ok(&repo_path, &["git", "import", "--at-op=@-"]);
-    test_env.jj_cmd_ok(&repo_path, &["status"]); // resolve concurrent ops
+    copy_ref("refs/heads/bookmark1", "test_tag");
+    copy_ref("refs/heads/bookmark2", "test_tag2");
+    copy_ref("refs/heads/bookmark1", "conflicted_tag");
+    test_env.run_jj_in(&repo_path, ["git", "import"]).success();
+    copy_ref("refs/heads/bookmark2", "conflicted_tag");
+    test_env.run_jj_in(&repo_path, ["git", "import"]).success();
+    copy_ref("refs/heads/bookmark3", "conflicted_tag");
+    test_env
+        .run_jj_in(&repo_path, ["git", "import", "--at-op=@-"])
+        .success();
+    test_env.run_jj_in(&repo_path, ["status"]).success(); // resolve concurrent ops
 
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["tag", "list"]),
-        @r###"
+        test_env.run_jj_in(&repo_path, ["tag", "list"]),
+        @r"
     conflicted_tag (conflicted):
       - rlvkpnrz caf975d0 (empty) commit1
       + zsuskuln 3db783e0 (empty) commit2
       + royxmykx 68d950ce (empty) commit3
     test_tag: rlvkpnrz caf975d0 (empty) commit1
     test_tag2: zsuskuln 3db783e0 (empty) commit2
-    "###);
+    [EOF]
+    ");
 
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["tag", "list", "--color=always"]),
-        @r###"
+        test_env.run_jj_in(&repo_path, ["tag", "list", "--color=always"]),
+        @r"
     [38;5;5mconflicted_tag[39m [38;5;1m(conflicted)[39m:
       - [1m[38;5;5mrl[0m[38;5;8mvkpnrz[39m [1m[38;5;4mc[0m[38;5;8maf975d0[39m [38;5;2m(empty)[39m commit1
       + [1m[38;5;5mzs[0m[38;5;8muskuln[39m [1m[38;5;4m3[0m[38;5;8mdb783e0[39m [38;5;2m(empty)[39m commit2
       + [1m[38;5;5mr[0m[38;5;8moyxmykx[39m [1m[38;5;4m6[0m[38;5;8m8d950ce[39m [38;5;2m(empty)[39m commit3
     [38;5;5mtest_tag[39m: [1m[38;5;5mrl[0m[38;5;8mvkpnrz[39m [1m[38;5;4mc[0m[38;5;8maf975d0[39m [38;5;2m(empty)[39m commit1
     [38;5;5mtest_tag2[39m: [1m[38;5;5mzs[0m[38;5;8muskuln[39m [1m[38;5;4m3[0m[38;5;8mdb783e0[39m [38;5;2m(empty)[39m commit2
-    "###);
+    [EOF]
+    ");
 
     // Test pattern matching.
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["tag", "list", "test_tag2"]),
-        @r###"
+        test_env.run_jj_in(&repo_path, ["tag", "list", "test_tag2"]),
+        @r"
     test_tag2: zsuskuln 3db783e0 (empty) commit2
-    "###);
+    [EOF]
+    ");
 
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["tag", "list", "glob:test_tag?"]),
-        @r###"
+        test_env.run_jj_in(&repo_path, ["tag", "list", "glob:test_tag?"]),
+        @r"
     test_tag2: zsuskuln 3db783e0 (empty) commit2
-    "###);
+    [EOF]
+    ");
 
     let template = r#"
     concat(
@@ -95,8 +120,8 @@ fn test_tag_list() {
     )
     "#;
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["tag", "list", "-T", template]),
-        @r###"
+        test_env.run_jj_in(&repo_path, ["tag", "list", "-T", template]),
+        @r"
     [conflicted_tag]
     present: true
     conflict: true
@@ -115,5 +140,6 @@ fn test_tag_list() {
     normal_target: commit2
     removed_targets:
     added_targets: commit2
-    "###);
+    [EOF]
+    ");
 }

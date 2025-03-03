@@ -23,28 +23,34 @@ fn create_commit(
     parents: &[&str],
     files: &[(&str, &str)],
 ) {
-    if parents.is_empty() {
-        test_env.jj_cmd_ok(repo_path, &["new", "root()", "-m", name]);
-    } else {
-        let mut args = vec!["new", "-m", name];
-        args.extend(parents);
-        test_env.jj_cmd_ok(repo_path, &args);
-    }
+    let parents = match parents {
+        [] => &["root()"],
+        parents => parents,
+    };
+    test_env
+        .run_jj_with(|cmd| {
+            cmd.current_dir(repo_path)
+                .args(["new", "-m", name])
+                .args(parents)
+        })
+        .success();
     for (name, content) in files {
         std::fs::write(repo_path.join(name), content).unwrap();
     }
-    test_env.jj_cmd_ok(repo_path, &["bookmark", "create", name]);
+    test_env
+        .run_jj_in(repo_path, ["bookmark", "create", "-r@", name])
+        .success();
 }
 
 #[test]
 fn test_status_copies() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("copy-source"), "copy1\ncopy2\ncopy3\n").unwrap();
     std::fs::write(repo_path.join("rename-source"), "rename").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
     std::fs::write(
         repo_path.join("copy-source"),
         "copy1\ncopy2\ncopy3\nsource\n",
@@ -58,46 +64,54 @@ fn test_status_copies() {
     std::fs::remove_file(repo_path.join("rename-source")).unwrap();
     std::fs::write(repo_path.join("rename-target"), "rename").unwrap();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output, @r"
     Working copy changes:
     M copy-source
     C {copy-source => copy-target}
     R {rename-source => rename-target}
     Working copy : rlvkpnrz a96c3086 (no description set)
     Parent commit: qpvuntsm e3e2c703 (no description set)
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_status_merge() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file"), "base").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m=left"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "left"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "@-", "-m=right"]);
+    test_env.run_jj_in(&repo_path, ["new", "-m=left"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "left"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "@-", "-m=right"])
+        .success();
     std::fs::write(repo_path.join("file"), "right").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new", "left", "@"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "left", "@"])
+        .success();
 
     // The output should mention each parent, and the diff should be empty (compared
     // to the auto-merged parents)
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output, @r"
     The working copy has no changes.
     Working copy : mzvwutvl a538c72d (empty) (no description set)
     Parent commit: rlvkpnrz d3dd19f1 left | (empty) left
     Parent commit: zsuskuln 705a356d right
-    "###);
+    [EOF]
+    ");
 }
 
 // See https://github.com/jj-vcs/jj/issues/2051.
 #[test]
 fn test_status_ignored_gitignore() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::create_dir(repo_path.join("untracked")).unwrap();
@@ -109,32 +123,34 @@ fn test_status_ignored_gitignore() {
     .unwrap();
     std::fs::write(repo_path.join(".gitignore"), "untracked/\n!dummy\n").unwrap();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output, @r"
     Working copy changes:
     A .gitignore
     Working copy : qpvuntsm 3cef2183 (no description set)
     Parent commit: zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_status_filtered() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("file_1"), "file_1").unwrap();
     std::fs::write(repo_path.join("file_2"), "file_2").unwrap();
 
     // The output filtered to file_1 should not list the addition of file_2.
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status", "file_1"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["status", "file_1"]);
+    insta::assert_snapshot!(output, @r"
     Working copy changes:
     A file_1
     Working copy : qpvuntsm c8fb8395 (no description set)
     Parent commit: zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 }
 
 // See <https://github.com/jj-vcs/jj/issues/3108>
@@ -142,44 +158,56 @@ fn test_status_filtered() {
 #[test]
 fn test_status_display_relevant_working_commit_conflict_hints() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
 
     let repo_path = test_env.env_root().join("repo");
     let conflicted_path = repo_path.join("conflicted.txt");
 
     // PARENT: Write the initial file
     std::fs::write(&conflicted_path, "initial contents").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["describe", "--message", "Initial contents"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "--message", "Initial contents"])
+        .success();
 
     // CHILD1: New commit on top of <PARENT>
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["new", "--message", "First part of conflicting change"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["new", "--message", "First part of conflicting change"],
+        )
+        .success();
     std::fs::write(&conflicted_path, "Child 1").unwrap();
 
     // CHILD2: New commit also on top of <PARENT>
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "new",
-            "--message",
-            "Second part of conflicting change",
-            "@-",
-        ],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "new",
+                "--message",
+                "Second part of conflicting change",
+                "@-",
+            ],
+        )
+        .success();
     std::fs::write(&conflicted_path, "Child 2").unwrap();
 
     // CONFLICT: New commit that is conflicted by merging <CHILD1> and <CHILD2>
-    test_env.jj_cmd_ok(&repo_path, &["new", "--message", "boom", "all:(@-)+"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "--message", "boom", "all:(@-)+"])
+        .success();
     // Adding more descendants to ensure we correctly find the root ancestors with
     // conflicts, not just the parents.
-    test_env.jj_cmd_ok(&repo_path, &["new", "--message", "boom-cont"]);
-    test_env.jj_cmd_ok(&repo_path, &["new", "--message", "boom-cont-2"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "--message", "boom-cont"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["new", "--message", "boom-cont-2"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "::"]);
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "::"]);
 
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     @  yqosqzyt test.user@example.com 2001-02-03 08:05:13 dcb25635 conflict
     │  (empty) boom-cont-2
     ×  royxmykx test.user@example.com 2001-02-03 08:05:12 664a4c6c conflict
@@ -193,38 +221,58 @@ fn test_status_display_relevant_working_commit_conflict_hints() {
     ○  qpvuntsm test.user@example.com 2001-02-03 08:05:08 aade7195
     │  Initial contents
     ◆  zzzzzzzz root() 00000000
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output, @r"
     The working copy has no changes.
-    There are unresolved conflicts at these paths:
-    conflicted.txt    2-sided conflict
     Working copy : yqosqzyt dcb25635 (conflict) (empty) boom-cont-2
     Parent commit: royxmykx 664a4c6c (conflict) (empty) boom-cont
-    To resolve the conflicts, start by updating to the first one:
+    Warning: There are unresolved conflicts at these paths:
+    conflicted.txt    2-sided conflict
+    Hint: To resolve the conflicts, start by updating to the first one:
       jj new mzvwutvl
     Then use `jj resolve`, or edit the conflict markers in the file directly.
     Once the conflicts are resolved, you may want to inspect the result with `jj diff`.
     Then run `jj squash` to move the resolution into the conflicted commit.
-    "###);
+    [EOF]
+    ");
+
+    let output = test_env.run_jj_in(&repo_path, ["status", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
+    The working copy has no changes.
+    Working copy : [1m[38;5;13my[38;5;8mqosqzyt[39m [38;5;12md[38;5;8mcb25635[39m [38;5;9m(conflict)[39m [38;5;10m(empty)[39m boom-cont-2[0m
+    Parent commit: [1m[38;5;5mr[0m[38;5;8moyxmykx[39m [1m[38;5;4m6[0m[38;5;8m64a4c6c[39m [38;5;1m(conflict)[39m [38;5;2m(empty)[39m boom-cont
+    [1m[38;5;3mWarning: [39mThere are unresolved conflicts at these paths:[0m
+    conflicted.txt    [38;5;3m2-sided conflict[39m
+    [1m[38;5;6mHint: [0m[39mTo resolve the conflicts, start by updating to the first one:[39m
+    [39m  jj new [1m[38;5;5mm[0m[38;5;8mzvwutvl[39m[39m
+    [39mThen use `jj resolve`, or edit the conflict markers in the file directly.[39m
+    [39mOnce the conflicts are resolved, you may want to inspect the result with `jj diff`.[39m
+    [39mThen run `jj squash` to move the resolution into the conflicted commit.[39m
+    [EOF]
+    ");
 
     // Resolve conflict
-    test_env.jj_cmd_ok(&repo_path, &["new", "--message", "fixed 1"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "--message", "fixed 1"])
+        .success();
     std::fs::write(&conflicted_path, "first commit to fix conflict").unwrap();
 
     // Add one more commit atop the commit that resolves the conflict.
-    test_env.jj_cmd_ok(&repo_path, &["new", "--message", "fixed 2"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "--message", "fixed 2"])
+        .success();
     std::fs::write(&conflicted_path, "edit not conflict").unwrap();
 
     // wc is now conflict free, parent is also conflict free
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "::"]);
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "::"]);
 
-    insta::assert_snapshot!(stdout, @r###"
-    @  kpqxywon test.user@example.com 2001-02-03 08:05:18 d313f2e1
+    insta::assert_snapshot!(output, @r"
+    @  kmkuslsw test.user@example.com 2001-02-03 08:05:19 caa7e9d5
     │  fixed 2
-    ○  znkkpsqq test.user@example.com 2001-02-03 08:05:17 23e58975
+    ○  kpqxywon test.user@example.com 2001-02-03 08:05:18 26bf6863
     │  fixed 1
     ×  yqosqzyt test.user@example.com 2001-02-03 08:05:13 dcb25635 conflict
     │  (empty) boom-cont-2
@@ -239,26 +287,28 @@ fn test_status_display_relevant_working_commit_conflict_hints() {
     ○  qpvuntsm test.user@example.com 2001-02-03 08:05:08 aade7195
     │  Initial contents
     ◆  zzzzzzzz root() 00000000
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
 
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     Working copy changes:
     M conflicted.txt
-    Working copy : kpqxywon d313f2e1 fixed 2
-    Parent commit: znkkpsqq 23e58975 fixed 1
-    "###);
+    Working copy : kmkuslsw caa7e9d5 fixed 2
+    Parent commit: kpqxywon 26bf6863 fixed 1
+    [EOF]
+    ");
 
     // Step back one.
     // wc is still conflict free, parent has a conflict.
-    test_env.jj_cmd_ok(&repo_path, &["edit", "@-"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "::"]);
+    test_env.run_jj_in(&repo_path, ["edit", "@-"]).success();
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "::"]);
 
-    insta::assert_snapshot!(stdout, @r###"
-    ○  kpqxywon test.user@example.com 2001-02-03 08:05:18 d313f2e1
+    insta::assert_snapshot!(output, @r"
+    ○  kmkuslsw test.user@example.com 2001-02-03 08:05:19 caa7e9d5
     │  fixed 2
-    @  znkkpsqq test.user@example.com 2001-02-03 08:05:17 23e58975
+    @  kpqxywon test.user@example.com 2001-02-03 08:05:18 26bf6863
     │  fixed 1
     ×  yqosqzyt test.user@example.com 2001-02-03 08:05:13 dcb25635 conflict
     │  (empty) boom-cont-2
@@ -273,28 +323,32 @@ fn test_status_display_relevant_working_commit_conflict_hints() {
     ○  qpvuntsm test.user@example.com 2001-02-03 08:05:08 aade7195
     │  Initial contents
     ◆  zzzzzzzz root() 00000000
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
 
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     Working copy changes:
     M conflicted.txt
-    Working copy : znkkpsqq 23e58975 fixed 1
+    Working copy : kpqxywon 26bf6863 fixed 1
     Parent commit: yqosqzyt dcb25635 (conflict) (empty) boom-cont-2
-    Conflict in parent commit has been resolved in working copy
-    "###);
+    Hint: Conflict in parent commit has been resolved in working copy
+    [EOF]
+    ");
 
     // Step back to all the way to `root()+` so that wc has no conflict, even though
     // there is a conflict later in the tree. So that we can confirm
     // our hinting logic doesn't get confused.
-    test_env.jj_cmd_ok(&repo_path, &["edit", "root()+"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "::"]);
+    test_env
+        .run_jj_in(&repo_path, ["edit", "root()+"])
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "::"]);
 
-    insta::assert_snapshot!(stdout, @r###"
-    ○  kpqxywon test.user@example.com 2001-02-03 08:05:18 d313f2e1
+    insta::assert_snapshot!(output, @r"
+    ○  kmkuslsw test.user@example.com 2001-02-03 08:05:19 caa7e9d5
     │  fixed 2
-    ○  znkkpsqq test.user@example.com 2001-02-03 08:05:17 23e58975
+    ○  kpqxywon test.user@example.com 2001-02-03 08:05:18 26bf6863
     │  fixed 1
     ×  yqosqzyt test.user@example.com 2001-02-03 08:05:13 dcb25635 conflict
     │  (empty) boom-cont-2
@@ -309,22 +363,24 @@ fn test_status_display_relevant_working_commit_conflict_hints() {
     @  qpvuntsm test.user@example.com 2001-02-03 08:05:08 aade7195
     │  Initial contents
     ◆  zzzzzzzz root() 00000000
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
 
-    insta::assert_snapshot!(stdout, @r###"
+    insta::assert_snapshot!(output, @r"
     Working copy changes:
     A conflicted.txt
     Working copy : qpvuntsm aade7195 Initial contents
     Parent commit: zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_status_simplify_conflict_sides() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Creates a 4-sided conflict, with fileA and fileB having different conflicts:
@@ -351,22 +407,23 @@ fn test_status_simplify_conflict_sides() {
         &[],
     );
 
-    insta::assert_snapshot!(test_env.jj_cmd_success(&repo_path, &["status"]),
-    @r###"
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["status"]),
+    @r"
     The working copy has no changes.
-    There are unresolved conflicts at these paths:
-    fileA    2-sided conflict
-    fileB    2-sided conflict
     Working copy : nkmrtpmo 83c4b9e7 conflict | (conflict) (empty) conflict
     Parent commit: kmkuslsw 4601566f conflictA | (conflict) (empty) conflictA
     Parent commit: lylxulpl 6f8d8381 conflictB | (conflict) (empty) conflictB
-    To resolve the conflicts, start by updating to one of the first ones:
+    Warning: There are unresolved conflicts at these paths:
+    fileA    2-sided conflict
+    fileB    2-sided conflict
+    Hint: To resolve the conflicts, start by updating to one of the first ones:
       jj new lylxulpl
       jj new kmkuslsw
     Then use `jj resolve`, or edit the conflict markers in the file directly.
     Once the conflicts are resolved, you may want to inspect the result with `jj diff`.
     Then run `jj squash` to move the resolution into the conflicted commit.
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
@@ -374,7 +431,7 @@ fn test_status_untracked_files() {
     let test_env = TestEnvironment::default();
     test_env.add_config(r#"snapshot.auto-track = "none()""#);
 
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     std::fs::write(repo_path.join("always-untracked-file"), "...").unwrap();
@@ -383,8 +440,8 @@ fn test_status_untracked_files() {
     std::fs::write(repo_path.join("sub").join("always-untracked"), "...").unwrap();
     std::fs::write(repo_path.join("sub").join("initially-untracked"), "...").unwrap();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     Untracked paths:
     ? always-untracked-file
     ? initially-untracked-file
@@ -392,20 +449,23 @@ fn test_status_untracked_files() {
     ? sub/initially-untracked
     Working copy : qpvuntsm 230dd059 (empty) (no description set)
     Parent commit: zzzzzzzz 00000000 (empty) (no description set)
+    [EOF]
     ");
 
-    test_env.jj_cmd_success(
-        &repo_path,
-        &[
-            "file",
-            "track",
-            "initially-untracked-file",
-            "sub/initially-untracked",
-        ],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "file",
+                "track",
+                "initially-untracked-file",
+                "sub/initially-untracked",
+            ],
+        )
+        .success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     Working copy changes:
     A initially-untracked-file
     A sub/initially-untracked
@@ -414,30 +474,34 @@ fn test_status_untracked_files() {
     ? sub/always-untracked
     Working copy : qpvuntsm 99798fcd (no description set)
     Parent commit: zzzzzzzz 00000000 (empty) (no description set)
+    [EOF]
     ");
 
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     Untracked paths:
     ? always-untracked-file
     ? sub/always-untracked
     Working copy : mzvwutvl 30e53c74 (empty) (no description set)
     Parent commit: qpvuntsm 99798fcd (no description set)
+    [EOF]
     ");
 
-    test_env.jj_cmd_success(
-        &repo_path,
-        &[
-            "file",
-            "untrack",
-            "initially-untracked-file",
-            "sub/initially-untracked",
-        ],
-    );
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "file",
+                "untrack",
+                "initially-untracked-file",
+                "sub/initially-untracked",
+            ],
+        )
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     Working copy changes:
     D initially-untracked-file
     D sub/initially-untracked
@@ -448,12 +512,13 @@ fn test_status_untracked_files() {
     ? sub/initially-untracked
     Working copy : mzvwutvl bb362aaf (no description set)
     Parent commit: qpvuntsm 99798fcd (no description set)
+    [EOF]
     ");
 
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
+    test_env.run_jj_in(&repo_path, ["new"]).success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["status"]);
-    insta::assert_snapshot!(stdout.replace('\\', "/"), @r"
+    let output = test_env.run_jj_in(&repo_path, ["status"]);
+    insta::assert_snapshot!(output.normalize_backslash(), @r"
     Untracked paths:
     ? always-untracked-file
     ? initially-untracked-file
@@ -461,5 +526,6 @@ fn test_status_untracked_files() {
     ? sub/initially-untracked
     Working copy : yostqsxw 8e8c02fe (empty) (no description set)
     Parent commit: mzvwutvl bb362aaf (no description set)
+    [EOF]
     ");
 }

@@ -21,41 +21,49 @@ use crate::common::TestEnvironment;
 
 fn create_repo() -> (TestEnvironment, PathBuf) {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     (test_env, repo_path)
 }
 
 fn create_commit(test_env: &TestEnvironment, repo_path: &Path, name: &str, parents: &[&str]) {
-    let mut args = vec!["new", "-m", name];
-    args.extend(parents);
-    test_env.jj_cmd_ok(repo_path, &args);
-
+    test_env
+        .run_jj_with(|cmd| {
+            cmd.current_dir(repo_path)
+                .args(["new", "-m", name])
+                .args(parents)
+        })
+        .success();
     std::fs::write(repo_path.join(name), format!("{name}\n")).unwrap();
-    test_env.jj_cmd_ok(repo_path, &["bookmark", "create", name]);
+    test_env
+        .run_jj_in(repo_path, ["bookmark", "create", "-r@", name])
+        .success();
 }
 
 #[test]
 fn test_simplify_parents_no_commits() {
     let (test_env, repo_path) = create_repo();
 
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["simplify-parents", "-r", "root() ~ root()"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents", "-r", "root() ~ root()"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_simplify_parents_immutable() {
     let (test_env, repo_path) = create_repo();
 
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["simplify-parents", "-r", "root()"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents", "-r", "root()"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: The root commit 000000000000 is immutable
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
 }
 
 #[test]
@@ -64,25 +72,28 @@ fn test_simplify_parents_no_change() {
 
     create_commit(&test_env, &repo_path, "a", &["root()"]);
     create_commit(&test_env, &repo_path, "b", &["a"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @  b
     ○  a
     ◆
-    "###);
+    [EOF]
+    ");
 
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["simplify-parents", "-s", "@-"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents", "-s", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @  b
     ○  a
     ◆
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
@@ -93,8 +104,8 @@ fn test_simplify_parents_no_change_diamond() {
     create_commit(&test_env, &repo_path, "b", &["a"]);
     create_commit(&test_env, &repo_path, "c", &["a"]);
     create_commit(&test_env, &repo_path, "d", &["b", "c"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @    d
     ├─╮
     │ ○  c
@@ -102,17 +113,18 @@ fn test_simplify_parents_no_change_diamond() {
     ├─╯
     ○  a
     ◆
-    "###);
+    [EOF]
+    ");
 
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["simplify-parents", "-r", "all() ~ root()"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents", "-r", "all() ~ root()"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @    d
     ├─╮
     │ ○  c
@@ -120,7 +132,8 @@ fn test_simplify_parents_no_change_diamond() {
     ├─╯
     ○  a
     ◆
-    "###);
+    [EOF]
+    ");
 }
 
 #[test_case(&["simplify-parents", "-r", "@", "-r", "@-"] ; "revisions")]
@@ -131,37 +144,38 @@ fn test_simplify_parents_redundant_parent(args: &[&str]) {
     create_commit(&test_env, &repo_path, "a", &["root()"]);
     create_commit(&test_env, &repo_path, "b", &["a"]);
     create_commit(&test_env, &repo_path, "c", &["a", "b"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
     insta::allow_duplicates! {
-        insta::assert_snapshot!(stdout, @r###"
+        insta::assert_snapshot!(output, @r"
         @    c
         ├─╮
         │ ○  b
         ├─╯
         ○  a
         ◆
-        "###);
+        [EOF]
+        ");
     }
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, args);
+    let output = test_env.run_jj_in(&repo_path, args);
     insta::allow_duplicates! {
-        insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-        insta::assert_snapshot!(stderr, @r###"
+        insta::assert_snapshot!(output, @r"
+        ------- stderr -------
         Removed 1 edges from 1 out of 3 commits.
         Working copy now at: royxmykx 0ac2063b c | c
         Parent commit      : zsuskuln 1394f625 b | b
-        "###);
+        [EOF]
+        ");
     }
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
     insta::allow_duplicates! {
-        insta::assert_snapshot!(stdout, @r###"
+        insta::assert_snapshot!(output, @r"
         @  c
         ○  b
         ○  a
         ◆
-        "###);
+        [EOF]
+        ");
     }
 }
 
@@ -175,8 +189,8 @@ fn test_simplify_parents_multiple_redundant_parents() {
     create_commit(&test_env, &repo_path, "d", &["c"]);
     create_commit(&test_env, &repo_path, "e", &["d"]);
     create_commit(&test_env, &repo_path, "f", &["d", "e"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @    f
     ├─╮
     │ ○  e
@@ -188,22 +202,23 @@ fn test_simplify_parents_multiple_redundant_parents() {
     ├─╯
     ○  a
     ◆
-    "#);
+    [EOF]
+    ");
     let setup_opid = test_env.current_operation_id(&repo_path);
 
     // Test with `-r`.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["simplify-parents", "-r", "c", "-r", "f"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents", "-r", "c", "-r", "f"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Removed 2 edges from 2 out of 2 commits.
     Rebased 2 descendant commits
     Working copy now at: kmkuslsw 8cc01e1b f | f
     Parent commit      : znkkpsqq 040ae3a6 e | e
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @  f
     ○  e
     ○  d
@@ -211,21 +226,25 @@ fn test_simplify_parents_multiple_redundant_parents() {
     ○  b
     ○  a
     ◆
-    "#);
+    [EOF]
+    ");
 
     // Test with `-s`.
-    test_env.jj_cmd_ok(&repo_path, &["op", "restore", &setup_opid]);
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["simplify-parents", "-s", "c"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r#"
+    test_env
+        .run_jj_in(&repo_path, ["op", "restore", &setup_opid])
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents", "-s", "c"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Removed 2 edges from 2 out of 4 commits.
     Rebased 2 descendant commits
     Working copy now at: kmkuslsw 70a39dff f | f
     Parent commit      : znkkpsqq a021fee9 e | e
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @  f
     ○  e
     ○  d
@@ -233,7 +252,8 @@ fn test_simplify_parents_multiple_redundant_parents() {
     ○  b
     ○  a
     ◆
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
@@ -246,8 +266,8 @@ fn test_simplify_parents_no_args() {
     create_commit(&test_env, &repo_path, "d", &["c"]);
     create_commit(&test_env, &repo_path, "e", &["d"]);
     create_commit(&test_env, &repo_path, "f", &["d", "e"]);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @    f
     ├─╮
     │ ○  e
@@ -259,20 +279,22 @@ fn test_simplify_parents_no_args() {
     ├─╯
     ○  a
     ◆
-    "#);
+    [EOF]
+    ");
     let setup_opid = test_env.current_operation_id(&repo_path);
 
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["simplify-parents"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Removed 2 edges from 2 out of 6 commits.
     Rebased 2 descendant commits
     Working copy now at: kmkuslsw 8cc01e1b f | f
     Parent commit      : znkkpsqq 040ae3a6 e | e
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @  f
     ○  e
     ○  d
@@ -280,21 +302,25 @@ fn test_simplify_parents_no_args() {
     ○  b
     ○  a
     ◆
-    "#);
+    [EOF]
+    ");
 
     // Test with custom `revsets.simplify-parents`.
-    test_env.jj_cmd_ok(&repo_path, &["op", "restore", &setup_opid]);
+    test_env
+        .run_jj_in(&repo_path, ["op", "restore", &setup_opid])
+        .success();
     test_env.add_config(r#"revsets.simplify-parents = "d::""#);
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["simplify-parents"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["simplify-parents"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Removed 1 edges from 1 out of 3 commits.
     Working copy now at: kmkuslsw 0c6b4c43 f | f
     Parent commit      : znkkpsqq 6a679611 e | e
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["log", "-r", "all()", "-T", "description"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log", "-r", "all()", "-T", "description"]);
+    insta::assert_snapshot!(output, @r"
     @  f
     ○  e
     ○  d
@@ -304,5 +330,6 @@ fn test_simplify_parents_no_args() {
     ├─╯
     ○  a
     ◆
-    "#);
+    [EOF]
+    ");
 }

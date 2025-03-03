@@ -13,60 +13,74 @@
 // limitations under the License.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use itertools::Itertools;
 use regex::Regex;
+use testutils::git;
 
-use crate::common::get_stdout_string;
-use crate::common::strip_last_line;
+use crate::common::to_toml_value;
+use crate::common::CommandOutput;
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_op_log() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description 0"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "description 0"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
     @  d009cfc04993 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
     │  describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
     │  args: jj describe -m 'description 0'
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
-    let op_log_lines = stdout.lines().collect_vec();
+    [EOF]
+    ");
+    let op_log_lines = output.stdout.raw().lines().collect_vec();
     let add_workspace_id = op_log_lines[3].split(' ').nth(2).unwrap();
 
     // Can load the repo at a specific operation ID
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path, add_workspace_id), @r###"
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path, add_workspace_id), @r"
     @  230dd059e1b059aefc0da06a2e5a7dbf22362f22
     ◆  0000000000000000000000000000000000000000
-    "###);
+    [EOF]
+    ");
     // "@" resolves to the head operation
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path, "@"), @r###"
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path, "@"), @r"
     @  19611c995a342c01f525583e5fcafdd211f6d009
     ◆  0000000000000000000000000000000000000000
-    "###);
+    [EOF]
+    ");
     // "@-" resolves to the parent of the head operation
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path, "@-"), @r###"
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path, "@-"), @r"
     @  230dd059e1b059aefc0da06a2e5a7dbf22362f22
     ◆  0000000000000000000000000000000000000000
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        test_env.jj_cmd_failure(&repo_path, &["log", "--at-op", "@---"]), @r###"
+        test_env.run_jj_in(&repo_path, ["log", "--at-op", "@---"]), @r#"
+    ------- stderr -------
     Error: The "@---" expression resolved to no operations
-    "###);
+    [EOF]
+    [exit status: 1]
+    "#);
 
     // We get a reasonable message if an invalid operation ID is specified
-    insta::assert_snapshot!(test_env.jj_cmd_failure(&repo_path, &["log", "--at-op", "foo"]), @r###"
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["log", "--at-op", "foo"]), @r#"
+    ------- stderr -------
     Error: Operation ID "foo" is not a valid hexadecimal prefix
-    "###);
+    [EOF]
+    [exit status: 1]
+    "#);
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log", "--op-diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--op-diff"]);
+    insta::assert_snapshot!(output, @r"
     @  d009cfc04993 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
     │  describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
     │  args: jj describe -m 'description 0'
@@ -80,58 +94,70 @@ fn test_op_log() {
     │  Changed commits:
     │  ○  + qpvuntsm 230dd059 (empty) (no description set)
     ○  000000000000 root()
-    "#);
+    [EOF]
+    ");
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description 1"]);
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "describe",
-            "-m",
-            "description 2",
-            "--at-op",
-            add_workspace_id,
-        ],
-    );
-    insta::assert_snapshot!(test_env.jj_cmd_failure(&repo_path, &["log", "--at-op", "@-"]), @r#"
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "description 1"])
+        .success();
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "describe",
+                "-m",
+                "description 2",
+                "--at-op",
+                add_workspace_id,
+            ],
+        )
+        .success();
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["log", "--at-op", "@-"]), @r#"
+    ------- stderr -------
     Error: The "@" expression resolved to more than one operation
     Hint: Try specifying one of the operations by ID: fd29e648380b, 3e8ef7115a0c
+    [EOF]
+    [exit status: 1]
     "#);
 }
 
 #[test]
 fn test_op_log_with_custom_symbols() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description 0"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "description 0"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "op",
             "log",
             "--config=templates.op_log_node='if(current_operation, \"$\", if(root, \"┴\", \"┝\"))'",
         ],
     );
-    insta::assert_snapshot!(&stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     $  d009cfc04993 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
     │  describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
     │  args: jj describe -m 'description 0'
     ┝  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ┴  000000000000 root()
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_log_with_no_template() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stderr = test_env.jj_cmd_cli_error(&repo_path, &["op", "log", "-T"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "-T"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     error: a value is required for '--template <TEMPLATE>' but none was supplied
 
     For more information, try '--help'.
@@ -152,72 +178,80 @@ fn test_op_log_with_no_template() {
     - description_placeholder
     - email_placeholder
     - name_placeholder
+    [EOF]
+    [exit status: 2]
     ");
 }
 
 #[test]
 fn test_op_log_limit() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log", "-Tdescription", "--limit=1"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "-Tdescription", "--limit=1"]);
+    insta::assert_snapshot!(output, @r"
     @  add workspace 'default'
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_log_no_graph() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stdout =
-        test_env.jj_cmd_success(&repo_path, &["op", "log", "--no-graph", "--color=always"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--no-graph", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
     [1m[38;5;12meac759b9ab75[39m [38;5;3mtest-username@host.example.com[39m [38;5;14m2001-02-03 04:05:07.000 +07:00[39m - [38;5;14m2001-02-03 04:05:07.000 +07:00[39m[0m
     [1madd workspace 'default'[0m
     [38;5;4m000000000000[39m [38;5;2mroot()[39m
-    "#);
+    [EOF]
+    ");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log", "--op-diff", "--no-graph"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--op-diff", "--no-graph"]);
+    insta::assert_snapshot!(output, @r"
     eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     add workspace 'default'
 
     Changed commits:
     + qpvuntsm 230dd059 (empty) (no description set)
     000000000000 root()
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_log_reversed() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description 0"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "description 0"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log", "--reversed"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--reversed"]);
+    insta::assert_snapshot!(output, @r"
     ○  000000000000 root()
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     @  d009cfc04993 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
        describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
        args: jj describe -m 'description 0'
-    "#);
+    [EOF]
+    ");
 
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["describe", "-m", "description 1", "--at-op", "@-"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["describe", "-m", "description 1", "--at-op", "@-"],
+        )
+        .success();
 
     // Should be able to display log with fork and branch points
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "log", "--reversed"]);
-    insta::assert_snapshot!(&stderr, @"Concurrent modification detected, resolving automatically.");
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--reversed"]);
+    insta::assert_snapshot!(output, @r"
     ○  000000000000 root()
     ○    eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     ├─╮  add workspace 'default'
@@ -230,11 +264,15 @@ fn test_op_log_reversed() {
     @  e4538ffdc13d test-username@host.example.com 2001-02-03 04:05:11.000 +07:00 - 2001-02-03 04:05:11.000 +07:00
        reconcile divergent operations
        args: jj op log --reversed
-    "#);
+    [EOF]
+    ------- stderr -------
+    Concurrent modification detected, resolving automatically.
+    [EOF]
+    ");
 
     // Should work correctly with `--no-graph`
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log", "--reversed", "--no-graph"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--reversed", "--no-graph"]);
+    insta::assert_snapshot!(output, @r"
     000000000000 root()
     eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     add workspace 'default'
@@ -247,11 +285,12 @@ fn test_op_log_reversed() {
     e4538ffdc13d test-username@host.example.com 2001-02-03 04:05:11.000 +07:00 - 2001-02-03 04:05:11.000 +07:00
     reconcile divergent operations
     args: jj op log --reversed
-    "#);
+    [EOF]
+    ");
 
     // Should work correctly with `--limit`
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log", "--reversed", "--limit=3"]);
-    insta::assert_snapshot!(stdout, @r"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--reversed", "--limit=3"]);
+    insta::assert_snapshot!(output, @r"
     ○  8e3e726be123 test-username@host.example.com 2001-02-03 04:05:10.000 +07:00 - 2001-02-03 04:05:10.000 +07:00
     │  describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
     │  args: jj describe -m 'description 1' --at-op @-
@@ -261,67 +300,78 @@ fn test_op_log_reversed() {
     @  e4538ffdc13d test-username@host.example.com 2001-02-03 04:05:11.000 +07:00 - 2001-02-03 04:05:11.000 +07:00
        reconcile divergent operations
        args: jj op log --reversed
+    [EOF]
     ");
 
     // Should work correctly with `--limit` and `--no-graph`
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["op", "log", "--reversed", "--limit=2", "--no-graph"],
+        ["op", "log", "--reversed", "--limit=2", "--no-graph"],
     );
-    insta::assert_snapshot!(stdout, @r"
+    insta::assert_snapshot!(output, @r"
     d009cfc04993 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
     describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
     args: jj describe -m 'description 0'
     e4538ffdc13d test-username@host.example.com 2001-02-03 04:05:11.000 +07:00 - 2001-02-03 04:05:11.000 +07:00
     reconcile divergent operations
     args: jj op log --reversed
+    [EOF]
     ");
 }
 
 #[test]
 fn test_op_log_no_graph_null_terminated() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "message1"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "message2"]);
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "message1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "message2"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &[
-            "op",
-            "log",
-            "--no-graph",
-            "--template",
-            r#"id.short(4) ++ "\0""#,
-        ],
-    );
-    insta::assert_debug_snapshot!(stdout, @r#""ef17\0f412\0eac7\00000\0""#);
+    let output = test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "op",
+                "log",
+                "--no-graph",
+                "--template",
+                r#"id.short(4) ++ "\0""#,
+            ],
+        )
+        .success();
+    insta::assert_debug_snapshot!(output.stdout.normalized(), @r#""ef17\0f412\0eac7\00000\0""#);
 }
 
 #[test]
 fn test_op_log_template() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    let render = |template| test_env.jj_cmd_success(&repo_path, &["op", "log", "-T", template]);
+    let render = |template| test_env.run_jj_in(&repo_path, ["op", "log", "-T", template]);
 
-    insta::assert_snapshot!(render(r#"id ++ "\n""#), @r#"
+    insta::assert_snapshot!(render(r#"id ++ "\n""#), @r"
     @  eac759b9ab75793fd3da96e60939fb48f2cd2b2a9c1f13ffe723cf620f3005b8d3e7e923634a07ea39513e4f2f360c87b9ad5d331cf90d7a844864b83b72eba1
     ○  00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-    "#);
+    [EOF]
+    ");
     insta::assert_snapshot!(
         render(r#"separate(" ", id.short(5), current_operation, user,
-                                time.start(), time.end(), time.duration()) ++ "\n""#), @r#"
+                                time.start(), time.end(), time.duration()) ++ "\n""#), @r"
     @  eac75 true test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 2001-02-03 04:05:07.000 +07:00 less than a microsecond
     ○  00000 false @ 1970-01-01 00:00:00.000 +00:00 1970-01-01 00:00:00.000 +00:00 less than a microsecond
-    "#);
+    [EOF]
+    ");
 
     // Negative length shouldn't cause panic.
-    insta::assert_snapshot!(render(r#"id.short(-1) ++ "|""#), @r#"
+    insta::assert_snapshot!(render(r#"id.short(-1) ++ "|""#), @r"
     @  <Error: out of range integral type conversion attempted>|
     ○  <Error: out of range integral type conversion attempted>|
-    "#);
+    [EOF]
+    ");
 
     // Test the default template, i.e. with relative start time and duration. We
     // don't generally use that template because it depends on the current time,
@@ -333,25 +383,27 @@ fn test_op_log_template() {
         "#,
     );
     let regex = Regex::new(r"\d\d years").unwrap();
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log"]);
-    insta::assert_snapshot!(regex.replace_all(&stdout, "NN years"), @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(
+        output.normalize_stdout_with(|s| regex.replace_all(&s, "NN years").into_owned()), @r"
     @  eac759b9ab75 test-username@host.example.com NN years ago, lasted less than a microsecond
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_log_builtin_templates() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
-    // Render without graph and append "[EOF]" marker to test line ending
-    let render = |template| {
-        test_env.jj_cmd_success(&repo_path, &["op", "log", "-T", template, "--no-graph"])
-            + "[EOF]\n"
-    };
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description 0"]);
+    // Render without graph to test line ending
+    let render =
+        |template| test_env.run_jj_in(&repo_path, ["op", "log", "-T", template, "--no-graph"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m", "description 0"])
+        .success();
 
     insta::assert_snapshot!(render(r#"builtin_op_log_compact"#), @r#"
     d009cfc04993 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
@@ -387,35 +439,34 @@ fn test_op_log_builtin_templates() {
 #[test]
 fn test_op_log_word_wrap() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     std::fs::write(repo_path.join("file1"), "foo\n".repeat(100)).unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["debug", "snapshot"]);
+    test_env
+        .run_jj_in(&repo_path, ["debug", "snapshot"])
+        .success();
 
     let render = |args: &[&str], columns: u32, word_wrap: bool| {
-        let mut args = args.to_vec();
-        if word_wrap {
-            args.push("--config=ui.log-word-wrap=true");
-        }
-        let assert = test_env
-            .jj_cmd(&repo_path, &args)
-            .env("COLUMNS", columns.to_string())
-            .assert()
-            .success()
-            .stderr("");
-        get_stdout_string(&assert)
+        let word_wrap = to_toml_value(word_wrap);
+        test_env.run_jj_with(|cmd| {
+            cmd.current_dir(&repo_path)
+                .args(args)
+                .arg(format!("--config=ui.log-word-wrap={word_wrap}"))
+                .env("COLUMNS", columns.to_string())
+        })
     };
 
     // ui.log-word-wrap option works
-    insta::assert_snapshot!(render(&["op", "log"], 40, false), @r#"
+    insta::assert_snapshot!(render(&["op", "log"], 40, false), @r"
     @  b7cd3d0069f6 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
     │  snapshot working copy
     │  args: jj debug snapshot
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
-    insta::assert_snapshot!(render(&["op", "log"], 40, true), @r#"
+    [EOF]
+    ");
+    insta::assert_snapshot!(render(&["op", "log"], 40, true), @r"
     @  b7cd3d0069f6
     │  test-username@host.example.com
     │  2001-02-03 04:05:08.000 +07:00 -
@@ -428,10 +479,11 @@ fn test_op_log_word_wrap() {
     │  2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
+    [EOF]
+    ");
 
     // Nested graph should be wrapped
-    insta::assert_snapshot!(render(&["op", "log", "--op-diff"], 40, true), @r#"
+    insta::assert_snapshot!(render(&["op", "log", "--op-diff"], 40, true), @r"
     @  b7cd3d0069f6
     │  test-username@host.example.com
     │  2001-02-03 04:05:08.000 +07:00 -
@@ -454,10 +506,11 @@ fn test_op_log_word_wrap() {
     │  ○  + qpvuntsm 230dd059 (empty) (no
     │     description set)
     ○  000000000000 root()
-    "#);
+    [EOF]
+    ");
 
     // Nested diff stat shouldn't exceed the terminal width
-    insta::assert_snapshot!(render(&["op", "log", "-n1", "--stat"], 40, true), @r#"
+    insta::assert_snapshot!(render(&["op", "log", "-n1", "--stat"], 40, true), @r"
     @  b7cd3d0069f6
     │  test-username@host.example.com
     │  2001-02-03 04:05:08.000 +07:00 -
@@ -472,8 +525,9 @@ fn test_op_log_word_wrap() {
     │     (no description set)
     │     file1 | 100 +++++++++++++++++++
     │     1 file changed, 100 insertions(+), 0 deletions(-)
-    "#);
-    insta::assert_snapshot!(render(&["op", "log", "-n1", "--no-graph", "--stat"], 40, true), @r#"
+    [EOF]
+    ");
+    insta::assert_snapshot!(render(&["op", "log", "-n1", "--no-graph", "--stat"], 40, true), @r"
     b7cd3d0069f6
     test-username@host.example.com
     2001-02-03 04:05:08.000 +07:00 -
@@ -487,12 +541,13 @@ fn test_op_log_word_wrap() {
     description set)
     file1 | 100 +++++++++++++++++++++++++
     1 file changed, 100 insertions(+), 0 deletions(-)
-    "#);
+    [EOF]
+    ");
 
     // Nested graph widths should be subtracted from the term width
     let config = r#"templates.commit_summary='"0 1 2 3 4 5 6 7 8 9"'"#;
     insta::assert_snapshot!(
-        render(&["op", "log", "-T''", "--op-diff", "-n1", "--config", config], 15, true), @r#"
+        render(&["op", "log", "-T''", "--op-diff", "-n1", "--config", config], 15, true), @r"
     @
     │
     │  Changed
@@ -503,7 +558,8 @@ fn test_op_log_word_wrap() {
     │     - 0 1 2 3
     │     4 5 6 7 8
     │     9
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
@@ -515,26 +571,36 @@ fn test_op_log_configurable() {
         "#,
     );
     test_env
-        .jj_cmd(test_env.env_root(), &["git", "init", "repo"])
-        .env_remove("JJ_OP_HOSTNAME")
-        .env_remove("JJ_OP_USERNAME")
-        .assert()
+        .run_jj_with(|cmd| {
+            cmd.args(["git", "init", "repo"])
+                .env_remove("JJ_OP_HOSTNAME")
+                .env_remove("JJ_OP_USERNAME")
+        })
         .success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log"]);
-    assert!(stdout.contains("my-username@my-hostname"));
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
+    @  98b85ab600ce my-username@my-hostname 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    │  add workspace 'default'
+    ○  000000000000 root()
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_abandon_ancestors() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 1"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 2"]);
-    insta::assert_snapshot!(test_env.jj_cmd_success(&repo_path, &["op", "log"]), @r#"
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 2"])
+        .success();
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["op", "log"]), @r"
     @  116edde65ded test-username@host.example.com 2001-02-03 04:05:09.000 +07:00 - 2001-02-03 04:05:09.000 +07:00
     │  commit 81a4ef3dd421f3184289df1c58bd3a16ea1e3d8e
     │  args: jj commit -m 'commit 2'
@@ -544,34 +610,47 @@ fn test_op_abandon_ancestors() {
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
+    [EOF]
+    ");
 
     // Abandon old operations. The working-copy operation id should be updated.
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "abandon", "..@-"]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "..@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned 2 operations and reparented 1 descendant operations.
-    "#);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["debug", "local-working-copy", "--ignore-working-copy"]), @r###"
+        test_env.run_jj_in(&repo_path, ["debug", "local-working-copy", "--ignore-working-copy"]), @r#"
     Current operation: OperationId("8545e013752445fd845c84eb961dbfbce47e1deb628e4ef20df10f6dc9aae2ef9e47200b0fcc70ca51f050aede05d0fa6dd1db40e20ae740876775738a07d02e")
     Current tree: Merge(Resolved(TreeId("4b825dc642cb6eb9a060e54bf8d69288fbee4904")))
-    "###);
-    insta::assert_snapshot!(test_env.jj_cmd_success(&repo_path, &["op", "log"]), @r###"
+    [EOF]
+    "#);
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["op", "log"]), @r"
     @  8545e0137524 test-username@host.example.com 2001-02-03 04:05:09.000 +07:00 - 2001-02-03 04:05:09.000 +07:00
     │  commit 81a4ef3dd421f3184289df1c58bd3a16ea1e3d8e
     │  args: jj commit -m 'commit 2'
     ○  000000000000 root()
-    "###);
+    [EOF]
+    ");
 
     // Abandon operation range.
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 3"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 4"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 5"]);
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "abandon", "@---..@-"]);
-    insta::assert_snapshot!(stderr, @r###"
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 3"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 4"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 5"])
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "@---..@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned 2 operations and reparented 1 descendant operations.
-    "###);
-    insta::assert_snapshot!(test_env.jj_cmd_success(&repo_path, &["op", "log"]), @r###"
+    [EOF]
+    ");
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["op", "log"]), @r"
     @  d92d0753399f test-username@host.example.com 2001-02-03 04:05:16.000 +07:00 - 2001-02-03 04:05:16.000 +07:00
     │  commit c5f7dd51add0046405055336ef443f882a0a8968
     │  args: jj commit -m 'commit 5'
@@ -579,33 +658,43 @@ fn test_op_abandon_ancestors() {
     │  commit 81a4ef3dd421f3184289df1c58bd3a16ea1e3d8e
     │  args: jj commit -m 'commit 2'
     ○  000000000000 root()
-    "###);
+    [EOF]
+    ");
 
     // Can't abandon the current operation.
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["op", "abandon", "..@"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "..@"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: Cannot abandon the current operation d92d0753399f
     Hint: Run `jj undo` to revert the current operation, then use `jj op abandon`
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
 
     // Can't create concurrent abandoned operations explicitly.
-    let stderr = test_env.jj_cmd_cli_error(&repo_path, &["op", "abandon", "--at-op=@-", "@"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "--at-op=@-", "@"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: --at-op is not respected
-    "###);
+    [EOF]
+    [exit status: 2]
+    ");
 
     // Abandon the current operation by undoing it first.
-    test_env.jj_cmd_ok(&repo_path, &["undo"]);
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "abandon", "@-"]);
-    insta::assert_snapshot!(stderr, @r###"
+    test_env.run_jj_in(&repo_path, ["undo"]).success();
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned 1 operations and reparented 1 descendant operations.
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["debug", "local-working-copy", "--ignore-working-copy"]), @r###"
+        test_env.run_jj_in(&repo_path, ["debug", "local-working-copy", "--ignore-working-copy"]), @r#"
     Current operation: OperationId("0699d720d0cecd80fb7d765c45955708c61b12feb1d7ed9ff2777ae719471f04ffed3c1dc24efdbf94bdb74426065d6fa9a4f0862a89db2c8c8e359eefc45462")
     Current tree: Merge(Resolved(TreeId("4b825dc642cb6eb9a060e54bf8d69288fbee4904")))
-    "###);
-    insta::assert_snapshot!(test_env.jj_cmd_success(&repo_path, &["op", "log"]), @r###"
+    [EOF]
+    "#);
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["op", "log"]), @r"
     @  0699d720d0ce test-username@host.example.com 2001-02-03 04:05:21.000 +07:00 - 2001-02-03 04:05:21.000 +07:00
     │  undo operation d92d0753399f732e438bdd88fa7e5214cba2a310d120ec1714028a514c7116bcf04b4a0b26c04dbecf0a917f1d4c8eb05571b8816dd98b0502aaf321e92500b3
     │  args: jj undo
@@ -613,124 +702,160 @@ fn test_op_abandon_ancestors() {
     │  commit 81a4ef3dd421f3184289df1c58bd3a16ea1e3d8e
     │  args: jj commit -m 'commit 2'
     ○  000000000000 root()
-    "###);
+    [EOF]
+    ");
 
     // Abandon empty range.
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "abandon", "@-..@-"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "@-..@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
-    insta::assert_snapshot!(test_env.jj_cmd_success(&repo_path, &["op", "log", "-n1"]), @r###"
+    [EOF]
+    ");
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["op", "log", "-n1"]), @r"
     @  0699d720d0ce test-username@host.example.com 2001-02-03 04:05:21.000 +07:00 - 2001-02-03 04:05:21.000 +07:00
     │  undo operation d92d0753399f732e438bdd88fa7e5214cba2a310d120ec1714028a514c7116bcf04b4a0b26c04dbecf0a917f1d4c8eb05571b8816dd98b0502aaf321e92500b3
     │  args: jj undo
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_abandon_without_updating_working_copy() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 1"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 2"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 3"]);
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 2"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 3"])
+        .success();
 
     // Abandon without updating the working copy.
-    let (_stdout, stderr) = test_env.jj_cmd_ok(
-        &repo_path,
-        &["op", "abandon", "@-", "--ignore-working-copy"],
-    );
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "@-", "--ignore-working-copy"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned 1 operations and reparented 1 descendant operations.
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["debug", "local-working-copy", "--ignore-working-copy"]), @r#"
+        test_env.run_jj_in(&repo_path, ["debug", "local-working-copy", "--ignore-working-copy"]), @r#"
     Current operation: OperationId("b0711a8ac91f5ac088cff9b57c9daf29dc61b1b4fedcbb9a07fe4c7f7da1e60e333c787eacf73d1e0544db048a4fe9c6c089991b4a67e25365c4f411fa8b489f")
     Current tree: Merge(Resolved(TreeId("4b825dc642cb6eb9a060e54bf8d69288fbee4904")))
+    [EOF]
     "#);
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["op", "log", "-n1", "--ignore-working-copy"]), @r#"
+        test_env.run_jj_in(&repo_path, ["op", "log", "-n1", "--ignore-working-copy"]), @r"
     @  0508a30825ed test-username@host.example.com 2001-02-03 04:05:10.000 +07:00 - 2001-02-03 04:05:10.000 +07:00
     │  commit 220cb0b1b5d1c03cc0d351139d824598bb3c1967
     │  args: jj commit -m 'commit 3'
-    "#);
+    [EOF]
+    ");
 
     // The working-copy operation id isn't updated if it differs from the repo.
     // It could be updated if the tree matches, but there's no extra logic for
     // that.
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "abandon", "@-"]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned 1 operations and reparented 1 descendant operations.
     Warning: The working copy operation b0711a8ac91f is not updated because it differs from the repo 0508a30825ed.
-    "#);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["debug", "local-working-copy", "--ignore-working-copy"]), @r#"
+        test_env.run_jj_in(&repo_path, ["debug", "local-working-copy", "--ignore-working-copy"]), @r#"
     Current operation: OperationId("b0711a8ac91f5ac088cff9b57c9daf29dc61b1b4fedcbb9a07fe4c7f7da1e60e333c787eacf73d1e0544db048a4fe9c6c089991b4a67e25365c4f411fa8b489f")
     Current tree: Merge(Resolved(TreeId("4b825dc642cb6eb9a060e54bf8d69288fbee4904")))
+    [EOF]
     "#);
     insta::assert_snapshot!(
-        test_env.jj_cmd_success(&repo_path, &["op", "log", "-n1", "--ignore-working-copy"]), @r#"
+        test_env.run_jj_in(&repo_path, ["op", "log", "-n1", "--ignore-working-copy"]), @r"
     @  2631d5576876 test-username@host.example.com 2001-02-03 04:05:10.000 +07:00 - 2001-02-03 04:05:10.000 +07:00
     │  commit 220cb0b1b5d1c03cc0d351139d824598bb3c1967
     │  args: jj commit -m 'commit 3'
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_abandon_multiple_heads() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Create 1 base operation + 2 operations to be diverged.
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 1"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 2"]);
-    test_env.jj_cmd_ok(&repo_path, &["commit", "-m", "commit 3"]);
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
-    );
-    let (head_op_id, prev_op_id) = stdout.lines().next_tuple().unwrap();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 2"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["commit", "-m", "commit 3"])
+        .success();
+    let output = test_env
+        .run_jj_in(
+            &repo_path,
+            ["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
+        )
+        .success();
+    let (head_op_id, prev_op_id) = output.stdout.raw().lines().next_tuple().unwrap();
     insta::assert_snapshot!(head_op_id, @"b0711a8ac91f");
     insta::assert_snapshot!(prev_op_id, @"116edde65ded");
 
     // Create 1 other concurrent operation.
-    test_env.jj_cmd_ok(&repo_path, &["commit", "--at-op=@--", "-m", "commit 4"]);
+    test_env
+        .run_jj_in(&repo_path, ["commit", "--at-op=@--", "-m", "commit 4"])
+        .success();
 
     // Can't resolve operation relative to @.
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["op", "abandon", "@-"]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", "@-"]);
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: The "@" expression resolved to more than one operation
     Hint: Try specifying one of the operations by ID: b0711a8ac91f, 617923db9f7a
+    [EOF]
+    [exit status: 1]
     "#);
-    let (_, other_head_op_id) = stderr.trim_end().rsplit_once(", ").unwrap();
+    let (_, other_head_op_id) = output.stderr.raw().trim_end().rsplit_once(", ").unwrap();
     insta::assert_snapshot!(other_head_op_id, @"617923db9f7a");
     assert_ne!(head_op_id, other_head_op_id);
 
     // Can't abandon one of the head operations.
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["op", "abandon", head_op_id]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", head_op_id]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: Cannot abandon the current operation b0711a8ac91f
-    "#);
+    [EOF]
+    [exit status: 1]
+    ");
 
     // Can't abandon the other head operation.
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["op", "abandon", other_head_op_id]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", other_head_op_id]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: Cannot abandon the current operation 617923db9f7a
-    "#);
+    [EOF]
+    [exit status: 1]
+    ");
 
     // Can abandon the operation which is not an ancestor of the other head.
     // This would crash if we attempted to remap the unchanged op in the op
     // heads store.
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "abandon", prev_op_id]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", prev_op_id]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned 1 operations and reparented 2 descendant operations.
-    "###);
+    [EOF]
+    ");
 
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "log"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
     @    7e65e7e27e34 test-username@host.example.com 2001-02-03 04:05:17.000 +07:00 - 2001-02-03 04:05:17.000 +07:00
     ├─╮  reconcile divergent operations
     │ │  args: jj op log
@@ -746,16 +871,19 @@ fn test_op_abandon_multiple_heads() {
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
-    insta::assert_snapshot!(stderr, @r###"
+    [EOF]
+    ------- stderr -------
     Concurrent modification detected, resolving automatically.
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_recover_from_bad_gc() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo", "--colocate"]);
+    test_env
+        .run_jj_in(".", ["git", "init", "repo", "--colocate"])
+        .success();
     let repo_path = test_env.env_root().join("repo");
     let git_object_path = |hex: &str| {
         let (shard, file_name) = hex.split_at(2);
@@ -764,53 +892,68 @@ fn test_op_recover_from_bad_gc() {
         file_path
     };
 
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m1"]);
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m2"]); // victim
-    test_env.jj_cmd_ok(&repo_path, &["abandon"]); // break predecessors chain
-    test_env.jj_cmd_ok(&repo_path, &["new", "-m3"]);
-    test_env.jj_cmd_ok(&repo_path, &["describe", "-m4"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m1"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m2"])
+        .success(); // victim
+    test_env.run_jj_in(&repo_path, ["abandon"]).success(); // break predecessors chain
+    test_env.run_jj_in(&repo_path, ["new", "-m3"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["describe", "-m4"])
+        .success();
 
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
-    );
-    let (head_op_id, _, _, bad_op_id) = stdout.lines().next_tuple().unwrap();
+    let output = test_env
+        .run_jj_in(
+            &repo_path,
+            ["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
+        )
+        .success();
+    let (head_op_id, _, _, bad_op_id) = output.stdout.raw().lines().next_tuple().unwrap();
     insta::assert_snapshot!(head_op_id, @"f999e12a5d8b");
     insta::assert_snapshot!(bad_op_id, @"e7377e6a642b");
 
     // Corrupt the repo by removing hidden but reachable commit object.
-    let bad_commit_id = test_env.jj_cmd_success(
-        &repo_path,
-        &[
-            "log",
-            "--at-op",
-            bad_op_id,
-            "--no-graph",
-            "-r@",
-            "-Tcommit_id",
-        ],
-    );
+    let output = test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "log",
+                "--at-op",
+                bad_op_id,
+                "--no-graph",
+                "-r@",
+                "-Tcommit_id",
+            ],
+        )
+        .success();
+    let bad_commit_id = output.stdout.into_raw();
     insta::assert_snapshot!(bad_commit_id, @"ddf84fc5e0dd314092b3dfb13e09e37fa7d04ef9");
     std::fs::remove_file(git_object_path(&bad_commit_id)).unwrap();
 
     // Do concurrent modification to make the situation even worse. At this
     // point, the index can be loaded, so this command succeeds.
-    test_env.jj_cmd_ok(&repo_path, &["--at-op=@-", "describe", "-m4.1"]);
+    test_env
+        .run_jj_in(&repo_path, ["--at-op=@-", "describe", "-m4.1"])
+        .success();
 
-    let stderr =
-        test_env.jj_cmd_internal_error(&repo_path, &["--at-op", head_op_id, "debug", "reindex"]);
-    insta::assert_snapshot!(strip_last_line(&stderr), @r#"
+    let output = test_env.run_jj_in(&repo_path, ["--at-op", head_op_id, "debug", "reindex"]);
+    insta::assert_snapshot!(output.strip_stderr_last_line(), @r"
+    ------- stderr -------
     Internal error: Failed to index commits at operation e7377e6a642bae88039615ee159117d49688719e9d5ece9de8b0b42d7be7076904d2fa8381391f8289a0c3527405de81e8dd6504655311c69175c3681786dd3c
     Caused by:
     1: Object ddf84fc5e0dd314092b3dfb13e09e37fa7d04ef9 of type commit not found
-    "#);
+    [EOF]
+    [exit status: 255]
+    ");
 
     // "op log" should still be usable.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["op", "log", "--ignore-working-copy", "--at-op", head_op_id],
+        ["op", "log", "--ignore-working-copy", "--at-op", head_op_id],
     );
-    insta::assert_snapshot!(stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     @  f999e12a5d8b test-username@host.example.com 2001-02-03 04:05:12.000 +07:00 - 2001-02-03 04:05:12.000 +07:00
     │  describe commit 37bb762e5dc08073ec4323bdffc023a0f0cc901e
     │  args: jj describe -m4
@@ -829,19 +972,20 @@ fn test_op_recover_from_bad_gc() {
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
-    insta::assert_snapshot!(stderr, @"");
+    [EOF]
+    ");
 
     // "op abandon" should work.
-    let (_stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["op", "abandon", &format!("..{bad_op_id}")]);
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "abandon", &format!("..{bad_op_id}")]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned 3 operations and reparented 4 descendant operations.
-    "#);
+    [EOF]
+    ");
 
     // The repo should no longer be corrupt.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["log"]);
-    insta::assert_snapshot!(stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["log"]);
+    insta::assert_snapshot!(output, @r"
     @  mzvwutvl?? test.user@example.com 2001-02-03 08:05:12 6d868f04
     │  (empty) 4
     │ ○  mzvwutvl?? test.user@example.com 2001-02-03 08:05:15 dc2c6d52
@@ -849,28 +993,72 @@ fn test_op_recover_from_bad_gc() {
     ○  zsuskuln test.user@example.com 2001-02-03 08:05:10 git_head() f652c321
     │  (empty) (no description set)
     ◆  zzzzzzzz root() 00000000
-    "#);
-    insta::assert_snapshot!(stderr, @r###"
+    [EOF]
+    ------- stderr -------
     Concurrent modification detected, resolving automatically.
-    "###);
+    [EOF]
+    ");
+}
+
+#[test]
+fn test_op_corrupted_operation_file() {
+    let test_env = TestEnvironment::default();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let repo_path = test_env.env_root().join("repo");
+    let op_store_path = repo_path.join(PathBuf::from_iter([".jj", "repo", "op_store"]));
+
+    let op_id = test_env.current_operation_id(&repo_path);
+    insta::assert_snapshot!(op_id, @"eac759b9ab75793fd3da96e60939fb48f2cd2b2a9c1f13ffe723cf620f3005b8d3e7e923634a07ea39513e4f2f360c87b9ad5d331cf90d7a844864b83b72eba1");
+
+    let op_file_path = op_store_path.join("operations").join(&op_id);
+    assert!(op_file_path.exists());
+
+    // truncated
+    std::fs::write(&op_file_path, b"").unwrap();
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Internal error: Failed to load an operation
+    Caused by:
+    1: Error when reading object eac759b9ab75793fd3da96e60939fb48f2cd2b2a9c1f13ffe723cf620f3005b8d3e7e923634a07ea39513e4f2f360c87b9ad5d331cf90d7a844864b83b72eba1 of type operation
+    2: Invalid hash length (expected 64 bytes, got 0 bytes)
+    [EOF]
+    [exit status: 255]
+    ");
+
+    // undecodable
+    std::fs::write(&op_file_path, b"\0").unwrap();
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Internal error: Failed to load an operation
+    Caused by:
+    1: Error when reading object eac759b9ab75793fd3da96e60939fb48f2cd2b2a9c1f13ffe723cf620f3005b8d3e7e923634a07ea39513e4f2f360c87b9ad5d331cf90d7a844864b83b72eba1 of type operation
+    2: failed to decode Protobuf message: invalid tag value: 0
+    [EOF]
+    [exit status: 255]
+    ");
 }
 
 #[test]
 fn test_op_summary_diff_template() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Tests in color (easier to read with `less -R`)
-    test_env.jj_cmd_ok(&repo_path, &["new", "--no-edit", "-m=scratch"]);
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "undo", "--color=always"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r#"
+    test_env
+        .run_jj_in(&repo_path, ["new", "--no-edit", "-m=scratch"])
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["op", "undo", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Undid operation: [38;5;4mac20a4ff4791[39m ([38;5;6m2001-02-03 08:05:08[39m) new empty commit
-    "#);
-    let stdout = test_env.jj_cmd_success(
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "op",
             "diff",
             "--from",
@@ -880,24 +1068,28 @@ fn test_op_summary_diff_template() {
             "--color=always",
         ],
     );
-    insta::assert_snapshot!(&stdout, @r"
+    insta::assert_snapshot!(output, @r"
     From operation: [38;5;4m000000000000[39m [38;5;2mroot()[39m
       To operation: [38;5;4me3792fce5b1f[39m ([38;5;6m2001-02-03 08:05:09[39m) undo operation ac20a4ff47914da9a2e43677b94455b86383bfb9227374d6531ecee85b9ff9230eeb96416a24bb27e7477aa18d50c01810e97c6a008b5c584224650846f4c05b
 
     Changed commits:
     ○  [38;5;2m+[39m [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [1m[38;5;4m2[0m[38;5;8m30dd059[39m [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
+    [EOF]
     ");
 
     // Tests with templates
-    test_env.jj_cmd_ok(&repo_path, &["new", "--no-edit", "-m=scratch"]);
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "undo", "--color=debug"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r#"
+    test_env
+        .run_jj_in(&repo_path, ["new", "--no-edit", "-m=scratch"])
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["op", "undo", "--color=debug"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Undid operation: [38;5;4m<<operation id short::2301f6e6ec31>>[39m<<operation:: (>>[38;5;6m<<operation time end local format::2001-02-03 08:05:11>>[39m<<operation::) >><<operation description first_line::new empty commit>>
-    "#);
-    let stdout = test_env.jj_cmd_success(
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "op",
             "diff",
             "--from",
@@ -907,12 +1099,13 @@ fn test_op_summary_diff_template() {
             "--color=debug",
         ],
     );
-    insta::assert_snapshot!(&stdout, @r"
+    insta::assert_snapshot!(output, @r"
     From operation: [38;5;4m<<operation id short::000000000000>>[39m<<operation:: >>[38;5;2m<<operation root::root()>>[39m
       To operation: [38;5;4m<<operation id short::d208ae1b4e3c>>[39m<<operation:: (>>[38;5;6m<<operation time end local format::2001-02-03 08:05:12>>[39m<<operation::) >><<operation description first_line::undo operation 2301f6e6ec31931a9b0a594742d6035a44c05250d1707f7f8678e888b11a98773ef07bf0e8008a5bccddf7114da4a35d1a1b1f7efa37c1e6c80d6bdb8f0d7a90>>
 
     Changed commits:
     ○  [38;5;2m<<diff added::+>>[39m [1m[38;5;5m<<change_id shortest prefix::q>>[0m[38;5;8m<<change_id shortest rest::pvuntsm>>[39m [1m[38;5;4m<<commit_id shortest prefix::2>>[0m[38;5;8m<<commit_id shortest rest::30dd059>>[39m [38;5;2m<<empty::(empty)>>[39m [38;5;2m<<empty description placeholder::(no description set)>>[39m
+    [EOF]
     ");
 }
 
@@ -921,247 +1114,269 @@ fn test_op_diff() {
     let test_env = TestEnvironment::default();
     let git_repo_path = test_env.env_root().join("git-repo");
     let git_repo = init_bare_git_repo(&git_repo_path);
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "git-repo", "repo"]);
+    test_env
+        .run_jj_in(".", ["git", "clone", "git-repo", "repo"])
+        .success();
     let repo_path = test_env.env_root().join("repo");
 
     // Overview of op log.
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    @  4d05b146ac44 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
+    @  364d0a677b0c test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  check out git remote's default branch
     │  args: jj git clone git-repo repo
-    ○  85a54acdbc88 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    ○  369ee2939177 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  fetch from git remote into empty repo
     │  args: jj git clone git-repo repo
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
+    [EOF]
+    ");
 
     // Diff between the same operation should be empty.
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["op", "diff", "--from", "0000000", "--to", "0000000"],
+        ["op", "diff", "--from", "0000000", "--to", "0000000"],
     );
-    insta::assert_snapshot!(&stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     From operation: 000000000000 root()
       To operation: 000000000000 root()
-    "#);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "--from", "@", "--to", "@"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 4d05b146ac44 (2001-02-03 08:05:07) check out git remote's default branch
-      To operation: 4d05b146ac44 (2001-02-03 08:05:07) check out git remote's default branch
-    "#);
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "--from", "@", "--to", "@"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 364d0a677b0c (2001-02-03 08:05:07) check out git remote's default branch
+      To operation: 364d0a677b0c (2001-02-03 08:05:07) check out git remote's default branch
+    [EOF]
+    ");
 
     // Diff from parent operation to latest operation.
     // `jj op diff --op @` should behave identically to `jj op diff --from
     // @- --to @` (if `@` is not a merge commit).
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "--from", "@-", "--to", "@"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 85a54acdbc88 (2001-02-03 08:05:07) fetch from git remote into empty repo
-      To operation: 4d05b146ac44 (2001-02-03 08:05:07) check out git remote's default branch
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "--from", "@-", "--to", "@"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 369ee2939177 (2001-02-03 08:05:07) fetch from git remote into empty repo
+      To operation: 364d0a677b0c (2001-02-03 08:05:07) check out git remote's default branch
 
     Changed commits:
-    ○  + sqpuoqvx 9708515f (empty) (no description set)
+    ○  + sqpuoqvx c7b48fea (empty) (no description set)
     ○  - qpvuntsm hidden 230dd059 (empty) (no description set)
 
     Changed local bookmarks:
     bookmark-1:
-    + ulyvmwyz 1d843d1f bookmark-1 | Commit 1
+    + pukowqtp 0cb7e07e bookmark-1 | Commit 1
     - (absent)
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked ulyvmwyz 1d843d1f bookmark-1 | Commit 1
-    - untracked ulyvmwyz 1d843d1f bookmark-1 | Commit 1
-    "#);
-    let stdout_without_from_to = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    assert_eq!(stdout, stdout_without_from_to);
+    + tracked pukowqtp 0cb7e07e bookmark-1 | Commit 1
+    - untracked pukowqtp 0cb7e07e bookmark-1 | Commit 1
+    [EOF]
+    ");
+    let output_without_from_to = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    assert_eq!(output, output_without_from_to);
 
     // Diff from root operation to latest operation
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "--from", "0000000"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "--from", "0000000"]);
+    insta::assert_snapshot!(output, @r"
     From operation: 000000000000 root()
-      To operation: 4d05b146ac44 (2001-02-03 08:05:07) check out git remote's default branch
+      To operation: 364d0a677b0c (2001-02-03 08:05:07) check out git remote's default branch
 
     Changed commits:
-    ○  + sqpuoqvx 9708515f (empty) (no description set)
-    ○  + ulyvmwyz 1d843d1f bookmark-1 | Commit 1
-    ○  + tqyxmszt 3e785984 bookmark-3@origin | Commit 3
-    ○  + yuvsmzqk 3d9189bc bookmark-2@origin | Commit 2
+    ○  + sqpuoqvx c7b48fea (empty) (no description set)
+    ○  + pukowqtp 0cb7e07e bookmark-1 | Commit 1
+    ○  + rnnslrkn 4ff62539 bookmark-2@origin | Commit 2
+    ○  + rnnkyono 11671e4c bookmark-3@origin | Commit 3
 
     Changed local bookmarks:
     bookmark-1:
-    + ulyvmwyz 1d843d1f bookmark-1 | Commit 1
+    + pukowqtp 0cb7e07e bookmark-1 | Commit 1
     - (absent)
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked ulyvmwyz 1d843d1f bookmark-1 | Commit 1
+    + tracked pukowqtp 0cb7e07e bookmark-1 | Commit 1
     - untracked (absent)
     bookmark-2@origin:
-    + untracked yuvsmzqk 3d9189bc bookmark-2@origin | Commit 2
+    + untracked rnnslrkn 4ff62539 bookmark-2@origin | Commit 2
     - untracked (absent)
     bookmark-3@origin:
-    + untracked tqyxmszt 3e785984 bookmark-3@origin | Commit 3
+    + untracked rnnkyono 11671e4c bookmark-3@origin | Commit 3
     - untracked (absent)
-    "#);
+    [EOF]
+    ");
 
     // Diff from latest operation to root operation
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "--to", "0000000"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 4d05b146ac44 (2001-02-03 08:05:07) check out git remote's default branch
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "--to", "0000000"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 364d0a677b0c (2001-02-03 08:05:07) check out git remote's default branch
       To operation: 000000000000 root()
 
     Changed commits:
-    ○  - sqpuoqvx hidden 9708515f (empty) (no description set)
-    ○  - ulyvmwyz hidden 1d843d1f Commit 1
-    ○  - tqyxmszt hidden 3e785984 Commit 3
-    ○  - yuvsmzqk hidden 3d9189bc Commit 2
+    ○  - sqpuoqvx hidden c7b48fea (empty) (no description set)
+    ○  - pukowqtp hidden 0cb7e07e Commit 1
+    ○  - rnnslrkn hidden 4ff62539 Commit 2
+    ○  - rnnkyono hidden 11671e4c Commit 3
 
     Changed local bookmarks:
     bookmark-1:
     + (absent)
-    - ulyvmwyz hidden 1d843d1f Commit 1
+    - pukowqtp hidden 0cb7e07e Commit 1
 
     Changed remote bookmarks:
     bookmark-1@origin:
     + untracked (absent)
-    - tracked ulyvmwyz hidden 1d843d1f Commit 1
+    - tracked pukowqtp hidden 0cb7e07e Commit 1
     bookmark-2@origin:
     + untracked (absent)
-    - untracked yuvsmzqk hidden 3d9189bc Commit 2
+    - untracked rnnslrkn hidden 4ff62539 Commit 2
     bookmark-3@origin:
     + untracked (absent)
-    - untracked tqyxmszt hidden 3e785984 Commit 3
-    "#);
+    - untracked rnnkyono hidden 11671e4c Commit 3
+    [EOF]
+    ");
 
     // Create a conflicted bookmark using a concurrent operation.
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "bookmark",
-            "set",
-            "bookmark-1",
-            "-r",
-            "bookmark-2@origin",
-            "--at-op",
-            "@-",
-        ],
-    );
-    let (_, stderr) = test_env.jj_cmd_ok(&repo_path, &["log"]);
-    insta::assert_snapshot!(&stderr, @r###"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "bookmark",
+                "set",
+                "bookmark-1",
+                "-r",
+                "bookmark-2@origin",
+                "--at-op",
+                "@-",
+            ],
+        )
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["log"]);
+    insta::assert_snapshot!(output, @r"
+    @  sqpuoqvx test.user@example.com 2001-02-03 08:05:07 c7b48fea
+    │  (empty) (no description set)
+    ◆  pukowqtp someone@example.org 1970-01-01 11:00:00 bookmark-1?? bookmark-1@origin 0cb7e07e
+    │  Commit 1
+    ~
+    [EOF]
+    ------- stderr -------
     Concurrent modification detected, resolving automatically.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    @    cd3fc3ddbdd9 test-username@host.example.com 2001-02-03 04:05:16.000 +07:00 - 2001-02-03 04:05:16.000 +07:00
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
+    @    7f6887c5ae04 test-username@host.example.com 2001-02-03 04:05:16.000 +07:00 - 2001-02-03 04:05:16.000 +07:00
     ├─╮  reconcile divergent operations
     │ │  args: jj log
-    ○ │  4d05b146ac44 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    ○ │  364d0a677b0c test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │ │  check out git remote's default branch
     │ │  args: jj git clone git-repo repo
-    │ ○  484785c371e5 test-username@host.example.com 2001-02-03 04:05:15.000 +07:00 - 2001-02-03 04:05:15.000 +07:00
-    ├─╯  point bookmark bookmark-1 to commit 3d9189bc56a1972729350456eb95ec5bf90be2a8
+    │ ○  ee092a3adf88 test-username@host.example.com 2001-02-03 04:05:15.000 +07:00 - 2001-02-03 04:05:15.000 +07:00
+    ├─╯  point bookmark bookmark-1 to commit 4ff6253913375c6ebdddd8423c11df3b3f17e331
     │    args: jj bookmark set bookmark-1 -r bookmark-2@origin --at-op @-
-    ○  85a54acdbc88 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    ○  369ee2939177 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  fetch from git remote into empty repo
     │  args: jj git clone git-repo repo
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
-    let op_log_lines = stdout.lines().collect_vec();
+    [EOF]
+    ");
+    let op_log_lines = output.stdout.raw().lines().collect_vec();
     let op_id = op_log_lines[0].split(' ').nth(4).unwrap();
     let first_parent_id = op_log_lines[3].split(' ').nth(3).unwrap();
     let second_parent_id = op_log_lines[6].split(' ').nth(3).unwrap();
 
     // Diff between the first parent of the merge operation and the merge operation.
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["op", "diff", "--from", first_parent_id, "--to", op_id],
+        ["op", "diff", "--from", first_parent_id, "--to", op_id],
     );
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 4d05b146ac44 (2001-02-03 08:05:07) check out git remote's default branch
-      To operation: cd3fc3ddbdd9 (2001-02-03 08:05:16) reconcile divergent operations
+    insta::assert_snapshot!(output, @r"
+    From operation: 364d0a677b0c (2001-02-03 08:05:07) check out git remote's default branch
+      To operation: 7f6887c5ae04 (2001-02-03 08:05:16) reconcile divergent operations
 
     Changed local bookmarks:
     bookmark-1:
-    + (added) ulyvmwyz 1d843d1f bookmark-1?? bookmark-1@origin | Commit 1
-    + (added) yuvsmzqk 3d9189bc bookmark-1?? bookmark-2@origin | Commit 2
-    - ulyvmwyz 1d843d1f bookmark-1?? bookmark-1@origin | Commit 1
-    "#);
+    + (added) pukowqtp 0cb7e07e bookmark-1?? bookmark-1@origin | Commit 1
+    + (added) rnnslrkn 4ff62539 bookmark-1?? bookmark-2@origin | Commit 2
+    - pukowqtp 0cb7e07e bookmark-1?? bookmark-1@origin | Commit 1
+    [EOF]
+    ");
 
     // Diff between the second parent of the merge operation and the merge
     // operation.
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["op", "diff", "--from", second_parent_id, "--to", op_id],
+        ["op", "diff", "--from", second_parent_id, "--to", op_id],
     );
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 484785c371e5 (2001-02-03 08:05:15) point bookmark bookmark-1 to commit 3d9189bc56a1972729350456eb95ec5bf90be2a8
-      To operation: cd3fc3ddbdd9 (2001-02-03 08:05:16) reconcile divergent operations
+    insta::assert_snapshot!(output, @r"
+    From operation: ee092a3adf88 (2001-02-03 08:05:15) point bookmark bookmark-1 to commit 4ff6253913375c6ebdddd8423c11df3b3f17e331
+      To operation: 7f6887c5ae04 (2001-02-03 08:05:16) reconcile divergent operations
 
     Changed commits:
-    ○  + sqpuoqvx 9708515f (empty) (no description set)
+    ○  + sqpuoqvx c7b48fea (empty) (no description set)
     ○  - qpvuntsm hidden 230dd059 (empty) (no description set)
 
     Changed local bookmarks:
     bookmark-1:
-    + (added) ulyvmwyz 1d843d1f bookmark-1?? bookmark-1@origin | Commit 1
-    + (added) yuvsmzqk 3d9189bc bookmark-1?? bookmark-2@origin | Commit 2
-    - yuvsmzqk 3d9189bc bookmark-1?? bookmark-2@origin | Commit 2
+    + (added) pukowqtp 0cb7e07e bookmark-1?? bookmark-1@origin | Commit 1
+    + (added) rnnslrkn 4ff62539 bookmark-1?? bookmark-2@origin | Commit 2
+    - rnnslrkn 4ff62539 bookmark-1?? bookmark-2@origin | Commit 2
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked ulyvmwyz 1d843d1f bookmark-1?? bookmark-1@origin | Commit 1
-    - untracked ulyvmwyz 1d843d1f bookmark-1?? bookmark-1@origin | Commit 1
-    "#);
+    + tracked pukowqtp 0cb7e07e bookmark-1?? bookmark-1@origin | Commit 1
+    - untracked pukowqtp 0cb7e07e bookmark-1?? bookmark-1@origin | Commit 1
+    [EOF]
+    ");
 
     // Test fetching from git remote.
     modify_git_repo(git_repo);
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: bookmark-1@origin [updated] tracked
     bookmark: bookmark-2@origin [updated] untracked
     bookmark: bookmark-3@origin [deleted] untracked
     Abandoned 1 commits that are no longer reachable.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: cd3fc3ddbdd9 (2001-02-03 08:05:16) reconcile divergent operations
-      To operation: 894f1f54aabe (2001-02-03 08:05:20) fetch from git remote(s) origin
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 7f6887c5ae04 (2001-02-03 08:05:16) reconcile divergent operations
+      To operation: 0fda9dbbc995 (2001-02-03 08:05:20) fetch from git remote(s) origin
 
     Changed commits:
-    ○  + qzxslznx d487febd bookmark-2@origin | Commit 5
-    ○  + slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    ○  - tqyxmszt hidden 3e785984 Commit 3
+    ○  + kulxwnxm e1a239a5 bookmark-2@origin | Commit 5
+    ○  + zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    ○  - rnnkyono hidden 11671e4c Commit 3
 
     Changed local bookmarks:
     bookmark-1:
-    + (added) slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    + (added) yuvsmzqk 3d9189bc bookmark-1?? | Commit 2
-    - (added) ulyvmwyz 1d843d1f Commit 1
-    - (added) yuvsmzqk 3d9189bc bookmark-1?? | Commit 2
+    + (added) zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    + (added) rnnslrkn 4ff62539 bookmark-1?? | Commit 2
+    - (added) pukowqtp 0cb7e07e Commit 1
+    - (added) rnnslrkn 4ff62539 bookmark-1?? | Commit 2
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    - tracked ulyvmwyz 1d843d1f Commit 1
+    + tracked zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    - tracked pukowqtp 0cb7e07e Commit 1
     bookmark-2@origin:
-    + untracked qzxslznx d487febd bookmark-2@origin | Commit 5
-    - untracked yuvsmzqk 3d9189bc bookmark-1?? | Commit 2
+    + untracked kulxwnxm e1a239a5 bookmark-2@origin | Commit 5
+    - untracked rnnslrkn 4ff62539 bookmark-1?? | Commit 2
     bookmark-3@origin:
     + untracked (absent)
-    - untracked tqyxmszt hidden 3e785984 Commit 3
-    "#);
+    - untracked rnnkyono hidden 11671e4c Commit 3
+    [EOF]
+    ");
 
     // Test creation of bookmark.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "bookmark",
             "create",
             "bookmark-2",
@@ -1169,168 +1384,170 @@ fn test_op_diff() {
             "bookmark-2@origin",
         ],
     );
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
-    Created 1 bookmarks pointing to qzxslznx d487febd bookmark-2 bookmark-2@origin | Commit 5
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 894f1f54aabe (2001-02-03 08:05:20) fetch from git remote(s) origin
-      To operation: ed134e3dc5c6 (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit d487febd08e690ee775a4e0387e30d544307e409
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Created 1 bookmarks pointing to kulxwnxm e1a239a5 bookmark-2 bookmark-2@origin | Commit 5
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 0fda9dbbc995 (2001-02-03 08:05:20) fetch from git remote(s) origin
+      To operation: 505a09f5c0f0 (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
 
     Changed local bookmarks:
     bookmark-2:
-    + qzxslznx d487febd bookmark-2 bookmark-2@origin | Commit 5
+    + kulxwnxm e1a239a5 bookmark-2 bookmark-2@origin | Commit 5
     - (absent)
-    "#);
+    [EOF]
+    ");
 
     // Test tracking of bookmark.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["bookmark", "track", "bookmark-2@origin"]);
-    insta::assert_snapshot!(&stdout, @r###"
-     "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "track", "bookmark-2@origin"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Started tracking 1 remote bookmarks.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: ed134e3dc5c6 (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit d487febd08e690ee775a4e0387e30d544307e409
-      To operation: 871bda1a359f (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 505a09f5c0f0 (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
+      To operation: e7d3f25689e1 (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
 
     Changed remote bookmarks:
     bookmark-2@origin:
-    + tracked qzxslznx d487febd bookmark-2 | Commit 5
-    - untracked qzxslznx d487febd bookmark-2 | Commit 5
-    "#);
+    + tracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    - untracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    [EOF]
+    ");
 
     // Test creation of new commit.
     // Test tracking of bookmark.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["bookmark", "track", "bookmark-2@origin"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "track", "bookmark-2@origin"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: Remote bookmark already tracked: bookmark-2@origin
     Nothing changed.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: ed134e3dc5c6 (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit d487febd08e690ee775a4e0387e30d544307e409
-      To operation: 871bda1a359f (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 505a09f5c0f0 (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
+      To operation: e7d3f25689e1 (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
 
     Changed remote bookmarks:
     bookmark-2@origin:
-    + tracked qzxslznx d487febd bookmark-2 | Commit 5
-    - untracked qzxslznx d487febd bookmark-2 | Commit 5
-    "#);
+    + tracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    - untracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    [EOF]
+    ");
 
     // Test creation of new commit.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
-        &repo_path,
-        &["new", "bookmark-1@origin", "-m", "new commit"],
-    );
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
-    Working copy now at: wvuyspvk 358b82d6 (empty) new commit
-    Parent commit      : slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    Added 1 files, modified 0 files, removed 1 files
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 871bda1a359f (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
-      To operation: 2604b8b3b9e5 (2001-02-03 08:05:28) new empty commit
+    let output = test_env.run_jj_in(&repo_path, ["new", "bookmark-1@origin", "-m", "new commit"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Working copy now at: wvuyspvk fefb1e17 (empty) new commit
+    Parent commit      : zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    Added 1 files, modified 0 files, removed 0 files
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: e7d3f25689e1 (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
+      To operation: b94b5ef70c8a (2001-02-03 08:05:28) new empty commit
 
     Changed commits:
-    ○  + wvuyspvk 358b82d6 (empty) new commit
-    ○  - sqpuoqvx hidden 9708515f (empty) (no description set)
-    "#);
+    ○  + wvuyspvk fefb1e17 (empty) new commit
+    ○  - sqpuoqvx hidden c7b48fea (empty) (no description set)
+    [EOF]
+    ");
 
     // Test updating of local bookmark.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["bookmark", "set", "bookmark-1", "-r", "@"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
-    Moved 1 bookmarks to wvuyspvk 358b82d6 bookmark-1* | (empty) new commit
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: 2604b8b3b9e5 (2001-02-03 08:05:28) new empty commit
-      To operation: e64617a51cdb (2001-02-03 08:05:30) point bookmark bookmark-1 to commit 358b82d6be53fa9b062325abb8bc820a8b34c68d
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "set", "bookmark-1", "-r", "@"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Moved 1 bookmarks to wvuyspvk fefb1e17 bookmark-1* | (empty) new commit
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: b94b5ef70c8a (2001-02-03 08:05:28) new empty commit
+      To operation: 26918495eee5 (2001-02-03 08:05:30) point bookmark bookmark-1 to commit fefb1e17c85328767a596c6dc3d9d604c024a02c
 
     Changed local bookmarks:
     bookmark-1:
-    + wvuyspvk 358b82d6 bookmark-1* | (empty) new commit
-    - (added) slvtnnzx 4f856199 bookmark-1@origin | Commit 4
-    - (added) yuvsmzqk 3d9189bc Commit 2
-    "#);
+    + wvuyspvk fefb1e17 bookmark-1* | (empty) new commit
+    - (added) zkmtkqvo 0dee6313 bookmark-1@origin | Commit 4
+    - (added) rnnslrkn 4ff62539 Commit 2
+    [EOF]
+    ");
 
     // Test deletion of local bookmark.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["bookmark", "delete", "bookmark-2"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "delete", "bookmark-2"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Deleted 1 bookmarks.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: e64617a51cdb (2001-02-03 08:05:30) point bookmark bookmark-1 to commit 358b82d6be53fa9b062325abb8bc820a8b34c68d
-      To operation: e07e94fbdd09 (2001-02-03 08:05:32) delete bookmark bookmark-2
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 26918495eee5 (2001-02-03 08:05:30) point bookmark bookmark-1 to commit fefb1e17c85328767a596c6dc3d9d604c024a02c
+      To operation: 9969a6088fd3 (2001-02-03 08:05:32) delete bookmark bookmark-2
 
     Changed local bookmarks:
     bookmark-2:
     + (absent)
-    - qzxslznx d487febd bookmark-2@origin | Commit 5
-    "#);
+    - kulxwnxm e1a239a5 bookmark-2@origin | Commit 5
+    [EOF]
+    ");
 
     // Test pushing to Git remote.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "push", "--tracked"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["git", "push", "--tracked"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Changes to push to origin:
-      Move forward bookmark bookmark-1 from 4f856199edbf to 358b82d6be53
-      Delete bookmark bookmark-2 from d487febd08e6
+      Move forward bookmark bookmark-1 from 0dee631320b1 to fefb1e17c853
+      Delete bookmark bookmark-2 from e1a239a57eb1
     Warning: The working-copy commit in workspace 'default' became immutable, so a new commit has been created on top of it.
-    Working copy now at: oupztwtk 2f0718a0 (empty) (no description set)
-    Parent commit      : wvuyspvk 358b82d6 bookmark-1 | (empty) new commit
-    "#);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    From operation: e07e94fbdd09 (2001-02-03 08:05:32) delete bookmark bookmark-2
-      To operation: 203fe2a7ed9e (2001-02-03 08:05:34) push all tracked bookmarks to git remote origin
+    Working copy now at: oupztwtk fe3ad088 (empty) (no description set)
+    Parent commit      : wvuyspvk fefb1e17 bookmark-1 | (empty) new commit
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff"]);
+    insta::assert_snapshot!(output, @r"
+    From operation: 9969a6088fd3 (2001-02-03 08:05:32) delete bookmark bookmark-2
+      To operation: ff305cfe0aca (2001-02-03 08:05:34) push all tracked bookmarks to git remote origin
 
     Changed commits:
-    ○  + oupztwtk 2f0718a0 (empty) (no description set)
+    ○  + oupztwtk fe3ad088 (empty) (no description set)
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked wvuyspvk 358b82d6 bookmark-1 | (empty) new commit
-    - tracked slvtnnzx 4f856199 Commit 4
+    + tracked wvuyspvk fefb1e17 bookmark-1 | (empty) new commit
+    - tracked zkmtkqvo 0dee6313 Commit 4
     bookmark-2@origin:
     + untracked (absent)
-    - tracked qzxslznx d487febd Commit 5
-    "#);
+    - tracked kulxwnxm e1a239a5 Commit 5
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_diff_patch() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Update working copy with a single file and create new commit.
     std::fs::write(repo_path.join("file"), "a\n").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["new"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["new"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: rlvkpnrz 56950632 (empty) (no description set)
     Parent commit      : qpvuntsm 6b1027d2 (no description set)
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "--op", "@-", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "--op", "@-", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     From operation: eac759b9ab75 (2001-02-03 08:05:07) add workspace 'default'
       To operation: 187a5a9d8a22 (2001-02-03 08:05:08) snapshot working copy
 
@@ -1344,26 +1561,29 @@ fn test_op_diff_patch() {
        +++ b/file
        @@ -0,0 +1,1 @@
        +a
+    [EOF]
     ");
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "--op", "@", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "--op", "@", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     From operation: 187a5a9d8a22 (2001-02-03 08:05:08) snapshot working copy
       To operation: a7e535e73c4b (2001-02-03 08:05:08) new empty commit
 
     Changed commits:
     ○  + rlvkpnrz 56950632 (empty) (no description set)
-    "#);
+    [EOF]
+    ");
 
     // Squash the working copy commit.
     std::fs::write(repo_path.join("file"), "b\n").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["squash"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["squash"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: mzvwutvl 9f4fb57f (empty) (no description set)
     Parent commit      : qpvuntsm 2ac85fd1 (no description set)
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     From operation: 15c3c5d0baf0 (2001-02-03 08:05:11) snapshot working copy
       To operation: 894c12d90345 (2001-02-03 08:05:11) squash commits into 6b1027d2770cd0a39c468e525e52bf8c47e1464a
 
@@ -1386,53 +1606,66 @@ fn test_op_diff_patch() {
        @@ -1,1 +1,1 @@
        -a
        +b
-    "#);
+    [EOF]
+    ");
 
     // Abandon the working copy commit.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["abandon"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["abandon"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned commit mzvwutvl 9f4fb57f (empty) (no description set)
     Working copy now at: yqosqzyt 33f321c4 (empty) (no description set)
     Parent commit      : qpvuntsm 2ac85fd1 (no description set)
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "diff", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "diff", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     From operation: 894c12d90345 (2001-02-03 08:05:11) squash commits into 6b1027d2770cd0a39c468e525e52bf8c47e1464a
       To operation: e5505aa79d31 (2001-02-03 08:05:13) abandon commit 9f4fb57fba25a7b47ce5980a5d9a4766778331e8
 
     Changed commits:
     ○  + yqosqzyt 33f321c4 (empty) (no description set)
     ○  - mzvwutvl hidden 9f4fb57f (empty) (no description set)
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_diff_sibling() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
-    );
-    let base_op_id = stdout.lines().next().unwrap();
+    let output = test_env
+        .run_jj_in(
+            &repo_path,
+            ["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
+        )
+        .success();
+    let base_op_id = output.stdout.raw().lines().next().unwrap();
     insta::assert_snapshot!(base_op_id, @"eac759b9ab75");
 
     // Create merge commit at one operation side. The parent trees will have to
     // be merged when diffing, which requires the commit index of this side.
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()", "-mA.1"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "root()", "-mA.1"])
+        .success();
     std::fs::write(repo_path.join("file1"), "a\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()", "-mA.2"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "root()", "-mA.2"])
+        .success();
     std::fs::write(repo_path.join("file2"), "a\n").unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["new", "all:@-+", "-mA"]);
+    test_env
+        .run_jj_in(&repo_path, ["new", "all:@-+", "-mA"])
+        .success();
 
     // Create another operation diverged from the base operation.
-    test_env.jj_cmd_ok(&repo_path, &["describe", "--at-op", base_op_id, "-mB"]);
+    test_env
+        .run_jj_in(&repo_path, ["describe", "--at-op", base_op_id, "-mB"])
+        .success();
 
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["op", "log"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
     @    779ecb7ea7f0 test-username@host.example.com 2001-02-03 04:05:13.000 +07:00 - 2001-02-03 04:05:13.000 +07:00
     ├─╮  reconcile divergent operations
     │ │  args: jj op log
@@ -1457,24 +1690,28 @@ fn test_op_diff_sibling() {
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
-    insta::assert_snapshot!(&stderr, @r###"
+    [EOF]
+    ------- stderr -------
     Concurrent modification detected, resolving automatically.
-    "###);
-    let stdout = test_env.jj_cmd_success(
-        &repo_path,
-        &["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
-    );
-    let (head_op_id, p1_op_id, _, _, _, _, p2_op_id) = stdout.lines().next_tuple().unwrap();
+    [EOF]
+    ");
+    let output = test_env
+        .run_jj_in(
+            &repo_path,
+            ["op", "log", "--no-graph", r#"-Tid.short() ++ "\n""#],
+        )
+        .success();
+    let (head_op_id, p1_op_id, _, _, _, _, p2_op_id) =
+        output.stdout.raw().lines().next_tuple().unwrap();
     insta::assert_snapshot!(head_op_id, @"779ecb7ea7f0");
     insta::assert_snapshot!(p1_op_id, @"d700dc16fded");
     insta::assert_snapshot!(p2_op_id, @"13b143e1f4f9");
 
     // Diff between p1 and p2 operations should work no matter if p2 is chosen
     // as a base operation.
-    let stdout = test_env.jj_cmd_success(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "op",
             "diff",
             "--at-op",
@@ -1486,7 +1723,7 @@ fn test_op_diff_sibling() {
             "--summary",
         ],
     );
-    insta::assert_snapshot!(&stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     From operation: d700dc16fded (2001-02-03 08:05:11) new empty commit
       To operation: 13b143e1f4f9 (2001-02-03 08:05:12) describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
 
@@ -1498,10 +1735,11 @@ fn test_op_diff_sibling() {
     │    A file1
     ○  - zsuskuln hidden 8afecaef A.2
        A file2
-    "#);
-    let stdout = test_env.jj_cmd_success(
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "op",
             "diff",
             "--at-op",
@@ -1513,7 +1751,7 @@ fn test_op_diff_sibling() {
             "--summary",
         ],
     );
-    insta::assert_snapshot!(&stdout, @r#"
+    insta::assert_snapshot!(output, @r"
     From operation: 13b143e1f4f9 (2001-02-03 08:05:12) describe commit 230dd059e1b059aefc0da06a2e5a7dbf22362f22
       To operation: d700dc16fded (2001-02-03 08:05:11) new empty commit
 
@@ -1525,7 +1763,8 @@ fn test_op_diff_sibling() {
     ○  + zsuskuln 8afecaef A.2
        A file2
     ○  - qpvuntsm hidden 02ef2bc4 (empty) B
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
@@ -1533,46 +1772,46 @@ fn test_op_diff_word_wrap() {
     let test_env = TestEnvironment::default();
     let git_repo_path = test_env.env_root().join("git-repo");
     init_bare_git_repo(&git_repo_path);
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "git-repo", "repo"]);
+    test_env
+        .run_jj_in(".", ["git", "clone", "git-repo", "repo"])
+        .success();
     let repo_path = test_env.env_root().join("repo");
     let render = |args: &[&str], columns: u32, word_wrap: bool| {
-        let mut args = args.to_vec();
-        if word_wrap {
-            args.push("--config=ui.log-word-wrap=true");
-        }
-        let assert = test_env
-            .jj_cmd(&repo_path, &args)
-            .env("COLUMNS", columns.to_string())
-            .assert()
-            .success()
-            .stderr("");
-        get_stdout_string(&assert)
+        let word_wrap = to_toml_value(word_wrap);
+        test_env.run_jj_with(|cmd| {
+            cmd.current_dir(&repo_path)
+                .args(args)
+                .arg(format!("--config=ui.log-word-wrap={word_wrap}"))
+                .env("COLUMNS", columns.to_string())
+        })
     };
 
     // Add some file content changes
     std::fs::write(repo_path.join("file1"), "foo\n".repeat(100)).unwrap();
-    test_env.jj_cmd_ok(&repo_path, &["debug", "snapshot"]);
+    test_env
+        .run_jj_in(&repo_path, ["debug", "snapshot"])
+        .success();
 
     // ui.log-word-wrap option works, and diff stat respects content width
-    insta::assert_snapshot!(render(&["op", "diff", "--from=@---", "--stat"], 40, true), @r#"
+    insta::assert_snapshot!(render(&["op", "diff", "--from=@---", "--stat"], 40, true), @r"
     From operation: eac759b9ab75 (2001-02-03 08:05:07) add workspace 'default'
-      To operation: f3052392e08c (2001-02-03 08:05:08) snapshot working copy
+      To operation: e1a943dc0fe5 (2001-02-03 08:05:08) snapshot working copy
 
     Changed commits:
-    ○  + sqpuoqvx 850efc9e (no description
+    ○  + sqpuoqvx 7581c520 (no description
     │  set)
     │  file1 | 100 ++++++++++++++++++++++
     │  1 file changed, 100 insertions(+), 0 deletions(-)
-    ○  + ulyvmwyz 1d843d1f bookmark-1 |
+    ○  + pukowqtp 0cb7e07e bookmark-1 |
        Commit 1
        some-file | 1 +
        1 file changed, 1 insertion(+), 0 deletions(-)
-    ○  + tqyxmszt 3e785984 bookmark-3@origin
-       | Commit 3
+    ○  + rnnslrkn 4ff62539 bookmark-2@origin
+       | Commit 2
        some-file | 1 +
        1 file changed, 1 insertion(+), 0 deletions(-)
-    ○  + yuvsmzqk 3d9189bc bookmark-2@origin
-       | Commit 2
+    ○  + rnnkyono 11671e4c bookmark-3@origin
+       | Commit 3
        some-file | 1 +
        1 file changed, 1 insertion(+), 0 deletions(-)
     ○  - qpvuntsm hidden 230dd059 (empty)
@@ -1581,31 +1820,32 @@ fn test_op_diff_word_wrap() {
 
     Changed local bookmarks:
     bookmark-1:
-    + ulyvmwyz 1d843d1f bookmark-1 | Commit
+    + pukowqtp 0cb7e07e bookmark-1 | Commit
     1
     - (absent)
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked ulyvmwyz 1d843d1f bookmark-1 |
+    + tracked pukowqtp 0cb7e07e bookmark-1 |
     Commit 1
     - untracked (absent)
     bookmark-2@origin:
-    + untracked yuvsmzqk 3d9189bc
+    + untracked rnnslrkn 4ff62539
     bookmark-2@origin | Commit 2
     - untracked (absent)
     bookmark-3@origin:
-    + untracked tqyxmszt 3e785984
+    + untracked rnnkyono 11671e4c
     bookmark-3@origin | Commit 3
     - untracked (absent)
-    "#);
+    [EOF]
+    ");
 
     // Graph width should be subtracted from the term width
     let config = r#"templates.commit_summary='"0 1 2 3 4 5 6 7 8 9"'"#;
     insta::assert_snapshot!(
-        render(&["op", "diff", "--from=@---", "--config", config], 10, true), @r#"
+        render(&["op", "diff", "--from=@---", "--config", config], 10, true), @r"
     From operation: eac759b9ab75 (2001-02-03 08:05:07) add workspace 'default'
-      To operation: f3052392e08c (2001-02-03 08:05:08) snapshot working copy
+      To operation: e1a943dc0fe5 (2001-02-03 08:05:08) snapshot working copy
 
     Changed
     commits:
@@ -1660,7 +1900,8 @@ fn test_op_diff_word_wrap() {
     -
     untracked
     (absent)
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
@@ -1668,148 +1909,166 @@ fn test_op_show() {
     let test_env = TestEnvironment::default();
     let git_repo_path = test_env.env_root().join("git-repo");
     let git_repo = init_bare_git_repo(&git_repo_path);
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "git-repo", "repo"]);
+    test_env
+        .run_jj_in(".", ["git", "clone", "git-repo", "repo"])
+        .success();
     let repo_path = test_env.env_root().join("repo");
 
     // Overview of op log.
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    @  4d05b146ac44 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    let output = test_env.run_jj_in(&repo_path, ["op", "log"]);
+    insta::assert_snapshot!(output, @r"
+    @  364d0a677b0c test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  check out git remote's default branch
     │  args: jj git clone git-repo repo
-    ○  85a54acdbc88 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    ○  369ee2939177 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  fetch from git remote into empty repo
     │  args: jj git clone git-repo repo
     ○  eac759b9ab75 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
-    "#);
+    [EOF]
+    ");
 
     // The root operation is empty.
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show", "0000000"]);
-    insta::assert_snapshot!(&stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["op", "show", "0000000"]);
+    insta::assert_snapshot!(output, @r"
     000000000000 root()
-    "###);
+    [EOF]
+    ");
 
     // Showing the latest operation.
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show", "@"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    4d05b146ac44 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    let output = test_env.run_jj_in(&repo_path, ["op", "show", "@"]);
+    insta::assert_snapshot!(output, @r"
+    364d0a677b0c test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     check out git remote's default branch
     args: jj git clone git-repo repo
 
     Changed commits:
-    ○  + sqpuoqvx 9708515f (empty) (no description set)
+    ○  + sqpuoqvx c7b48fea (empty) (no description set)
     ○  - qpvuntsm hidden 230dd059 (empty) (no description set)
 
     Changed local bookmarks:
     bookmark-1:
-    + ulyvmwyz 1d843d1f bookmark-1 | Commit 1
+    + pukowqtp 0cb7e07e bookmark-1 | Commit 1
     - (absent)
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked ulyvmwyz 1d843d1f bookmark-1 | Commit 1
-    - untracked ulyvmwyz 1d843d1f bookmark-1 | Commit 1
-    "#);
+    + tracked pukowqtp 0cb7e07e bookmark-1 | Commit 1
+    - untracked pukowqtp 0cb7e07e bookmark-1 | Commit 1
+    [EOF]
+    ");
     // `jj op show @` should behave identically to `jj op show`.
-    let stdout_without_op_id = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    assert_eq!(stdout, stdout_without_op_id);
+    let output_without_op_id = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    assert_eq!(output, output_without_op_id);
 
     // Showing a given operation.
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show", "@-"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    85a54acdbc88 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
+    let output = test_env.run_jj_in(&repo_path, ["op", "show", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    369ee2939177 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     fetch from git remote into empty repo
     args: jj git clone git-repo repo
 
     Changed commits:
-    ○  + tqyxmszt 3e785984 bookmark-3@origin | Commit 3
-    ○  + yuvsmzqk 3d9189bc bookmark-2@origin | Commit 2
-    ○  + ulyvmwyz 1d843d1f bookmark-1@origin | Commit 1
+    ○  + rnnslrkn 4ff62539 bookmark-2@origin | Commit 2
+    ○  + rnnkyono 11671e4c bookmark-3@origin | Commit 3
+    ○  + pukowqtp 0cb7e07e bookmark-1@origin | Commit 1
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + untracked ulyvmwyz 1d843d1f bookmark-1@origin | Commit 1
+    + untracked pukowqtp 0cb7e07e bookmark-1@origin | Commit 1
     - untracked (absent)
     bookmark-2@origin:
-    + untracked yuvsmzqk 3d9189bc bookmark-2@origin | Commit 2
+    + untracked rnnslrkn 4ff62539 bookmark-2@origin | Commit 2
     - untracked (absent)
     bookmark-3@origin:
-    + untracked tqyxmszt 3e785984 bookmark-3@origin | Commit 3
+    + untracked rnnkyono 11671e4c bookmark-3@origin | Commit 3
     - untracked (absent)
-    "#);
+    [EOF]
+    ");
 
     // Create a conflicted bookmark using a concurrent operation.
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "bookmark",
-            "set",
-            "bookmark-1",
-            "-r",
-            "bookmark-2@origin",
-            "--at-op",
-            "@-",
-        ],
-    );
-    let (_, stderr) = test_env.jj_cmd_ok(&repo_path, &["log"]);
-    insta::assert_snapshot!(&stderr, @r###"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "bookmark",
+                "set",
+                "bookmark-1",
+                "-r",
+                "bookmark-2@origin",
+                "--at-op",
+                "@-",
+            ],
+        )
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["log"]);
+    insta::assert_snapshot!(output, @r"
+    @  sqpuoqvx test.user@example.com 2001-02-03 08:05:07 c7b48fea
+    │  (empty) (no description set)
+    ◆  pukowqtp someone@example.org 1970-01-01 11:00:00 bookmark-1?? bookmark-1@origin 0cb7e07e
+    │  Commit 1
+    ~
+    [EOF]
+    ------- stderr -------
     Concurrent modification detected, resolving automatically.
-    "###);
+    [EOF]
+    ");
     // Showing a merge operation is empty.
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    140254f5a707 test-username@host.example.com 2001-02-03 04:05:14.000 +07:00 - 2001-02-03 04:05:14.000 +07:00
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    774687cc6e4e test-username@host.example.com 2001-02-03 04:05:14.000 +07:00 - 2001-02-03 04:05:14.000 +07:00
     reconcile divergent operations
     args: jj log
-    "#);
+    [EOF]
+    ");
 
     // Test fetching from git remote.
     modify_git_repo(git_repo);
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: bookmark-1@origin [updated] tracked
     bookmark: bookmark-2@origin [updated] untracked
     bookmark: bookmark-3@origin [deleted] untracked
     Abandoned 1 commits that are no longer reachable.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    4d5647c16e09 test-username@host.example.com 2001-02-03 04:05:16.000 +07:00 - 2001-02-03 04:05:16.000 +07:00
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    fed3d4f59819 test-username@host.example.com 2001-02-03 04:05:16.000 +07:00 - 2001-02-03 04:05:16.000 +07:00
     fetch from git remote(s) origin
     args: jj git fetch
 
     Changed commits:
-    ○  + qzxslznx d487febd bookmark-2@origin | Commit 5
-    ○  + slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    ○  - tqyxmszt hidden 3e785984 Commit 3
+    ○  + kulxwnxm e1a239a5 bookmark-2@origin | Commit 5
+    ○  + zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    ○  - rnnkyono hidden 11671e4c Commit 3
 
     Changed local bookmarks:
     bookmark-1:
-    + (added) slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    + (added) yuvsmzqk 3d9189bc bookmark-1?? | Commit 2
-    - (added) ulyvmwyz 1d843d1f Commit 1
-    - (added) yuvsmzqk 3d9189bc bookmark-1?? | Commit 2
+    + (added) zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    + (added) rnnslrkn 4ff62539 bookmark-1?? | Commit 2
+    - (added) pukowqtp 0cb7e07e Commit 1
+    - (added) rnnslrkn 4ff62539 bookmark-1?? | Commit 2
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    - tracked ulyvmwyz 1d843d1f Commit 1
+    + tracked zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    - tracked pukowqtp 0cb7e07e Commit 1
     bookmark-2@origin:
-    + untracked qzxslznx d487febd bookmark-2@origin | Commit 5
-    - untracked yuvsmzqk 3d9189bc bookmark-1?? | Commit 2
+    + untracked kulxwnxm e1a239a5 bookmark-2@origin | Commit 5
+    - untracked rnnslrkn 4ff62539 bookmark-1?? | Commit 2
     bookmark-3@origin:
     + untracked (absent)
-    - untracked tqyxmszt hidden 3e785984 Commit 3
-    "#);
+    - untracked rnnkyono hidden 11671e4c Commit 3
+    [EOF]
+    ");
 
     // Test creation of bookmark.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "bookmark",
             "create",
             "bookmark-2",
@@ -1817,174 +2076,176 @@ fn test_op_show() {
             "bookmark-2@origin",
         ],
     );
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
-    Created 1 bookmarks pointing to qzxslznx d487febd bookmark-2 bookmark-2@origin | Commit 5
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    c23f32312992 test-username@host.example.com 2001-02-03 04:05:18.000 +07:00 - 2001-02-03 04:05:18.000 +07:00
-    create bookmark bookmark-2 pointing to commit d487febd08e690ee775a4e0387e30d544307e409
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Created 1 bookmarks pointing to kulxwnxm e1a239a5 bookmark-2 bookmark-2@origin | Commit 5
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    77ed6ae71f3f test-username@host.example.com 2001-02-03 04:05:18.000 +07:00 - 2001-02-03 04:05:18.000 +07:00
+    create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
     args: jj bookmark create bookmark-2 -r bookmark-2@origin
 
     Changed local bookmarks:
     bookmark-2:
-    + qzxslznx d487febd bookmark-2 bookmark-2@origin | Commit 5
+    + kulxwnxm e1a239a5 bookmark-2 bookmark-2@origin | Commit 5
     - (absent)
-    "#);
+    [EOF]
+    ");
 
     // Test tracking of a bookmark.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["bookmark", "track", "bookmark-2@origin"]);
-    insta::assert_snapshot!(&stdout, @r###"
-     "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "track", "bookmark-2@origin"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Started tracking 1 remote bookmarks.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    eb6a6c523f67 test-username@host.example.com 2001-02-03 04:05:20.000 +07:00 - 2001-02-03 04:05:20.000 +07:00
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    f4e770fd7370 test-username@host.example.com 2001-02-03 04:05:20.000 +07:00 - 2001-02-03 04:05:20.000 +07:00
     track remote bookmark bookmark-2@origin
     args: jj bookmark track bookmark-2@origin
 
     Changed remote bookmarks:
     bookmark-2@origin:
-    + tracked qzxslznx d487febd bookmark-2 | Commit 5
-    - untracked qzxslznx d487febd bookmark-2 | Commit 5
-    "#);
+    + tracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    - untracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    [EOF]
+    ");
 
     // Test creation of new commit.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["bookmark", "track", "bookmark-2@origin"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "track", "bookmark-2@origin"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: Remote bookmark already tracked: bookmark-2@origin
     Nothing changed.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    eb6a6c523f67 test-username@host.example.com 2001-02-03 04:05:20.000 +07:00 - 2001-02-03 04:05:20.000 +07:00
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    f4e770fd7370 test-username@host.example.com 2001-02-03 04:05:20.000 +07:00 - 2001-02-03 04:05:20.000 +07:00
     track remote bookmark bookmark-2@origin
     args: jj bookmark track bookmark-2@origin
 
     Changed remote bookmarks:
     bookmark-2@origin:
-    + tracked qzxslznx d487febd bookmark-2 | Commit 5
-    - untracked qzxslznx d487febd bookmark-2 | Commit 5
-    "#);
+    + tracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    - untracked kulxwnxm e1a239a5 bookmark-2 | Commit 5
+    [EOF]
+    ");
 
     // Test creation of new commit.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
-        &repo_path,
-        &["new", "bookmark-1@origin", "-m", "new commit"],
-    );
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
-    Working copy now at: xznxytkn eb6c2b21 (empty) new commit
-    Parent commit      : slvtnnzx 4f856199 bookmark-1?? bookmark-1@origin | Commit 4
-    Added 1 files, modified 0 files, removed 1 files
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    0228d6c4044a test-username@host.example.com 2001-02-03 04:05:24.000 +07:00 - 2001-02-03 04:05:24.000 +07:00
+    let output = test_env.run_jj_in(&repo_path, ["new", "bookmark-1@origin", "-m", "new commit"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Working copy now at: xznxytkn 560df364 (empty) new commit
+    Parent commit      : zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
+    Added 1 files, modified 0 files, removed 0 files
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    e54bb5012457 test-username@host.example.com 2001-02-03 04:05:24.000 +07:00 - 2001-02-03 04:05:24.000 +07:00
     new empty commit
     args: jj new bookmark-1@origin -m 'new commit'
 
     Changed commits:
-    ○  + xznxytkn eb6c2b21 (empty) new commit
-    ○  - sqpuoqvx hidden 9708515f (empty) (no description set)
-    "#);
+    ○  + xznxytkn 560df364 (empty) new commit
+    ○  - sqpuoqvx hidden c7b48fea (empty) (no description set)
+    [EOF]
+    ");
 
     // Test updating of local bookmark.
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["bookmark", "set", "bookmark-1", "-r", "@"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
-    Moved 1 bookmarks to xznxytkn eb6c2b21 bookmark-1* | (empty) new commit
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    f37c3d23beab test-username@host.example.com 2001-02-03 04:05:26.000 +07:00 - 2001-02-03 04:05:26.000 +07:00
-    point bookmark bookmark-1 to commit eb6c2b21ec20a33ab6a1c44bc86c59d84ffd93ac
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "set", "bookmark-1", "-r", "@"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Moved 1 bookmarks to xznxytkn 560df364 bookmark-1* | (empty) new commit
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    55527022d8b9 test-username@host.example.com 2001-02-03 04:05:26.000 +07:00 - 2001-02-03 04:05:26.000 +07:00
+    point bookmark bookmark-1 to commit 560df364f0a09fe29f6a4fca8bd07c4464c7feee
     args: jj bookmark set bookmark-1 -r @
 
     Changed local bookmarks:
     bookmark-1:
-    + xznxytkn eb6c2b21 bookmark-1* | (empty) new commit
-    - (added) slvtnnzx 4f856199 bookmark-1@origin | Commit 4
-    - (added) yuvsmzqk 3d9189bc Commit 2
-    "#);
+    + xznxytkn 560df364 bookmark-1* | (empty) new commit
+    - (added) zkmtkqvo 0dee6313 bookmark-1@origin | Commit 4
+    - (added) rnnslrkn 4ff62539 Commit 2
+    [EOF]
+    ");
 
     // Test deletion of local bookmark.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["bookmark", "delete", "bookmark-2"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "delete", "bookmark-2"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Deleted 1 bookmarks.
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    ee9e64b76138 test-username@host.example.com 2001-02-03 04:05:28.000 +07:00 - 2001-02-03 04:05:28.000 +07:00
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    a6838035030b test-username@host.example.com 2001-02-03 04:05:28.000 +07:00 - 2001-02-03 04:05:28.000 +07:00
     delete bookmark bookmark-2
     args: jj bookmark delete bookmark-2
 
     Changed local bookmarks:
     bookmark-2:
     + (absent)
-    - qzxslznx d487febd bookmark-2@origin | Commit 5
-    "#);
+    - kulxwnxm e1a239a5 bookmark-2@origin | Commit 5
+    [EOF]
+    ");
 
     // Test pushing to Git remote.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "push", "--tracked"]);
-    insta::assert_snapshot!(&stdout, @r###"
-    "###);
-    insta::assert_snapshot!(&stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["git", "push", "--tracked"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Changes to push to origin:
-      Move forward bookmark bookmark-1 from 4f856199edbf to eb6c2b21ec20
-      Delete bookmark bookmark-2 from d487febd08e6
+      Move forward bookmark bookmark-1 from 0dee631320b1 to 560df364f0a0
+      Delete bookmark bookmark-2 from e1a239a57eb1
     Warning: The working-copy commit in workspace 'default' became immutable, so a new commit has been created on top of it.
-    Working copy now at: pzsxstzt 7ab2d837 (empty) (no description set)
-    Parent commit      : xznxytkn eb6c2b21 bookmark-1 | (empty) new commit
-    "#);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show"]);
-    insta::assert_snapshot!(&stdout, @r#"
-    cd1704964f59 test-username@host.example.com 2001-02-03 04:05:30.000 +07:00 - 2001-02-03 04:05:30.000 +07:00
+    Working copy now at: pzsxstzt 91310b51 (empty) (no description set)
+    Parent commit      : xznxytkn 560df364 bookmark-1 | (empty) new commit
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show"]);
+    insta::assert_snapshot!(output, @r"
+    2a7821341a99 test-username@host.example.com 2001-02-03 04:05:30.000 +07:00 - 2001-02-03 04:05:30.000 +07:00
     push all tracked bookmarks to git remote origin
     args: jj git push --tracked
 
     Changed commits:
-    ○  + pzsxstzt 7ab2d837 (empty) (no description set)
+    ○  + pzsxstzt 91310b51 (empty) (no description set)
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked xznxytkn eb6c2b21 bookmark-1 | (empty) new commit
-    - tracked slvtnnzx 4f856199 Commit 4
+    + tracked xznxytkn 560df364 bookmark-1 | (empty) new commit
+    - tracked zkmtkqvo 0dee6313 Commit 4
     bookmark-2@origin:
     + untracked (absent)
-    - tracked qzxslznx d487febd Commit 5
-    "#);
+    - tracked kulxwnxm e1a239a5 Commit 5
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_op_show_patch() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Update working copy with a single file and create new commit.
     std::fs::write(repo_path.join("file"), "a\n").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["new"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["new"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: rlvkpnrz 56950632 (empty) (no description set)
     Parent commit      : qpvuntsm 6b1027d2 (no description set)
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show", "@-", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show", "@-", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     187a5a9d8a22 test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
     snapshot working copy
     args: jj new
@@ -1999,27 +2260,30 @@ fn test_op_show_patch() {
        +++ b/file
        @@ -0,0 +1,1 @@
        +a
+    [EOF]
     ");
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show", "@", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["op", "show", "@", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     a7e535e73c4b test-username@host.example.com 2001-02-03 04:05:08.000 +07:00 - 2001-02-03 04:05:08.000 +07:00
     new empty commit
     args: jj new
 
     Changed commits:
     ○  + rlvkpnrz 56950632 (empty) (no description set)
-    "#);
+    [EOF]
+    ");
 
     // Squash the working copy commit.
     std::fs::write(repo_path.join("file"), "b\n").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["squash"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["squash"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: mzvwutvl 9f4fb57f (empty) (no description set)
     Parent commit      : qpvuntsm 2ac85fd1 (no description set)
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     894c12d90345 test-username@host.example.com 2001-02-03 04:05:11.000 +07:00 - 2001-02-03 04:05:11.000 +07:00
     squash commits into 6b1027d2770cd0a39c468e525e52bf8c47e1464a
     args: jj squash
@@ -2043,18 +2307,20 @@ fn test_op_show_patch() {
        @@ -1,1 +1,1 @@
        -a
        +b
-    "#);
+    [EOF]
+    ");
 
     // Abandon the working copy commit.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["abandon"]);
-    insta::assert_snapshot!(&stdout, @"");
-    insta::assert_snapshot!(&stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["abandon"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Abandoned commit mzvwutvl 9f4fb57f (empty) (no description set)
     Working copy now at: yqosqzyt 33f321c4 (empty) (no description set)
     Parent commit      : qpvuntsm 2ac85fd1 (no description set)
-    "###);
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "show", "-p", "--git"]);
-    insta::assert_snapshot!(&stdout, @r#"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["op", "show", "-p", "--git"]);
+    insta::assert_snapshot!(output, @r"
     e5505aa79d31 test-username@host.example.com 2001-02-03 04:05:13.000 +07:00 - 2001-02-03 04:05:13.000 +07:00
     abandon commit 9f4fb57fba25a7b47ce5980a5d9a4766778331e8
     args: jj abandon
@@ -2062,11 +2328,12 @@ fn test_op_show_patch() {
     Changed commits:
     ○  + yqosqzyt 33f321c4 (empty) (no description set)
     ○  - mzvwutvl hidden 9f4fb57f (empty) (no description set)
-    "#);
+    [EOF]
+    ");
 
     // Try again with "op log".
-    let stdout = test_env.jj_cmd_success(&repo_path, &["op", "log", "--git"]);
-    insta::assert_snapshot!(&stdout, @r"
+    let output = test_env.run_jj_in(&repo_path, ["op", "log", "--git"]);
+    insta::assert_snapshot!(output, @r"
     @  e5505aa79d31 test-username@host.example.com 2001-02-03 04:05:13.000 +07:00 - 2001-02-03 04:05:13.000 +07:00
     │  abandon commit 9f4fb57fba25a7b47ce5980a5d9a4766778331e8
     │  args: jj abandon
@@ -2137,119 +2404,81 @@ fn test_op_show_patch() {
     │  Changed commits:
     │  ○  + qpvuntsm 230dd059 (empty) (no description set)
     ○  000000000000 root()
+    [EOF]
     ");
 }
 
-fn init_bare_git_repo(git_repo_path: &Path) -> git2::Repository {
-    let git_repo = git2::Repository::init_bare(git_repo_path).unwrap();
-    let git_blob_oid = git_repo.blob(b"some content").unwrap();
-    let mut git_tree_builder = git_repo.treebuilder(None).unwrap();
-    git_tree_builder
-        .insert("some-file", git_blob_oid, 0o100644)
-        .unwrap();
-    let git_tree_id = git_tree_builder.write().unwrap();
-    drop(git_tree_builder);
-    let git_tree = git_repo.find_tree(git_tree_id).unwrap();
-    let git_signature = git2::Signature::new(
-        "Git User",
-        "git.user@example.com",
-        &git2::Time::new(123, 60),
-    )
-    .unwrap();
-    git_repo
-        .commit(
-            Some("refs/heads/bookmark-1"),
-            &git_signature,
-            &git_signature,
-            "Commit 1",
-            &git_tree,
-            &[],
-        )
-        .unwrap();
-    git_repo
-        .commit(
-            Some("refs/heads/bookmark-2"),
-            &git_signature,
-            &git_signature,
-            "Commit 2",
-            &git_tree,
-            &[],
-        )
-        .unwrap();
-    git_repo
-        .commit(
-            Some("refs/heads/bookmark-3"),
-            &git_signature,
-            &git_signature,
-            "Commit 3",
-            &git_tree,
-            &[],
-        )
-        .unwrap();
-    drop(git_tree);
-    git_repo.set_head("refs/heads/bookmark-1").unwrap();
+fn init_bare_git_repo(git_repo_path: &Path) -> gix::Repository {
+    let git_repo = git::init_bare(git_repo_path);
+    let commit_result = git::add_commit(
+        &git_repo,
+        "refs/heads/bookmark-1",
+        "some-file",
+        b"some content",
+        "Commit 1",
+        &[],
+    );
+    git::write_commit(
+        &git_repo,
+        "refs/heads/bookmark-2",
+        commit_result.tree_id,
+        "Commit 2",
+        &[],
+    );
+    git::write_commit(
+        &git_repo,
+        "refs/heads/bookmark-3",
+        commit_result.tree_id,
+        "Commit 3",
+        &[],
+    );
+
+    git::set_head_to_id(&git_repo, commit_result.commit_id);
     git_repo
 }
 
-fn modify_git_repo(git_repo: git2::Repository) -> git2::Repository {
-    let git_blob_oid = git_repo.blob(b"more content").unwrap();
-    let mut git_tree_builder = git_repo.treebuilder(None).unwrap();
-    git_tree_builder
-        .insert("next-file", git_blob_oid, 0o100644)
-        .unwrap();
-    let git_tree_id = git_tree_builder.write().unwrap();
-    drop(git_tree_builder);
-    let git_tree = git_repo.find_tree(git_tree_id).unwrap();
-    let git_signature = git2::Signature::new(
-        "Git User",
-        "git.user@example.com",
-        &git2::Time::new(123, 60),
-    )
-    .unwrap();
+fn modify_git_repo(git_repo: gix::Repository) -> gix::Repository {
     let bookmark1_commit = git_repo
         .find_reference("refs/heads/bookmark-1")
         .unwrap()
         .peel_to_commit()
-        .unwrap();
+        .unwrap()
+        .id();
     let bookmark2_commit = git_repo
         .find_reference("refs/heads/bookmark-2")
         .unwrap()
         .peel_to_commit()
-        .unwrap();
-    git_repo
-        .commit(
-            Some("refs/heads/bookmark-1"),
-            &git_signature,
-            &git_signature,
-            "Commit 4",
-            &git_tree,
-            &[&bookmark1_commit],
-        )
-        .unwrap();
-    git_repo
-        .commit(
-            Some("refs/heads/bookmark-2"),
-            &git_signature,
-            &git_signature,
-            "Commit 5",
-            &git_tree,
-            &[&bookmark2_commit],
-        )
-        .unwrap();
+        .unwrap()
+        .id();
+
+    let commit_result = git::add_commit(
+        &git_repo,
+        "refs/heads/bookmark-1",
+        "next-file",
+        b"more content",
+        "Commit 4",
+        &[bookmark1_commit.detach()],
+    );
+    git::write_commit(
+        &git_repo,
+        "refs/heads/bookmark-2",
+        commit_result.tree_id,
+        "Commit 5",
+        &[bookmark2_commit.detach()],
+    );
+
     git_repo
         .find_reference("refs/heads/bookmark-3")
         .unwrap()
         .delete()
         .unwrap();
-    drop(git_tree);
-    drop(bookmark1_commit);
-    drop(bookmark2_commit);
     git_repo
 }
 
-fn get_log_output(test_env: &TestEnvironment, repo_path: &Path, op_id: &str) -> String {
-    test_env.jj_cmd_success(
+#[must_use]
+fn get_log_output(test_env: &TestEnvironment, repo_path: &Path, op_id: &str) -> CommandOutput {
+    test_env.run_jj_in(
         repo_path,
-        &["log", "-T", "commit_id", "--at-op", op_id, "-r", "all()"],
+        ["log", "-T", "commit_id", "--at-op", op_id, "-r", "all()"],
     )
 }

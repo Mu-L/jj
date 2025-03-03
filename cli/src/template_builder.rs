@@ -845,6 +845,30 @@ fn builtin_string_methods<'a, L: TemplateLanguage<'a> + ?Sized>(
         },
     );
     map.insert(
+        "trim",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| s.trim().to_owned());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
+        "trim_start",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| s.trim_start().to_owned());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
+        "trim_end",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| s.trim_end().to_owned());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
         "substr",
         |language, diagnostics, build_ctx, self_property, function| {
             let [start_idx, end_idx] = function.expect_exact_arguments()?;
@@ -892,6 +916,14 @@ fn builtin_string_methods<'a, L: TemplateLanguage<'a> + ?Sized>(
         |_language, _diagnostics, _build_ctx, self_property, function| {
             function.expect_no_arguments()?;
             let out_property = self_property.map(|s| s.to_lowercase());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
+        "escape_json",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| serde_json::to_string(&s).unwrap());
             Ok(L::wrap_string(out_property))
         },
     );
@@ -1545,6 +1577,11 @@ fn builtin_functions<'a, L: TemplateLanguage<'a> + ?Sized>() -> TemplateBuildFun
             ))))
         },
     );
+    map.insert("stringify", |language, diagnostics, build_ctx, function| {
+        let [content_node] = function.expect_exact_arguments()?;
+        let content = expect_plain_text_expression(language, diagnostics, build_ctx, content_node)?;
+        Ok(L::wrap_string(content))
+    });
     map.insert("if", |language, diagnostics, build_ctx, function| {
         let ([condition_node, true_node], [false_node]) = function.expect_arguments()?;
         let condition =
@@ -2507,7 +2544,7 @@ mod tests {
             @"ax,ay;bx,by;cx,cy");
         // Nested string operations
         insta::assert_snapshot!(
-            env.render_ok(r#""!a\n!b\nc\nend".remove_suffix("end").lines().map(|s| s.remove_prefix("!"))"#),
+            env.render_ok(r#""!  a\n!b\nc\n   end".remove_suffix("end").trim_end().lines().map(|s| s.remove_prefix("!").trim_start())"#),
             @"a b c");
 
         // Lambda expression in alias
@@ -2634,6 +2671,15 @@ mod tests {
             env.render_ok(r#""bar@other.example.com".remove_suffix("@other.example.com")"#),
             @"bar");
 
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r    \t \r ".trim()"#), @"");
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r foo  bar \t \r ".trim()"#), @"foo  bar");
+
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r    \t \r ".trim_start()"#), @"");
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r foo  bar \t \r ".trim_start()"#), @"foo  bar \t \r ");
+
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r    \t \r ".trim_end()"#), @"");
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r foo  bar \t \r ".trim_end()"#), @" \n \r foo  bar");
+
         insta::assert_snapshot!(env.render_ok(r#""foo".substr(0, 0)"#), @"");
         insta::assert_snapshot!(env.render_ok(r#""foo".substr(0, 1)"#), @"f");
         insta::assert_snapshot!(env.render_ok(r#""foo".substr(0, 3)"#), @"foo");
@@ -2659,6 +2705,9 @@ mod tests {
         // ranges with end > start are empty
         insta::assert_snapshot!(env.render_ok(r#""abcdef".substr(4, 2)"#), @"");
         insta::assert_snapshot!(env.render_ok(r#""abcdef".substr(-2, -4)"#), @"");
+
+        insta::assert_snapshot!(env.render_ok(r#""hello".escape_json()"#), @r#""hello""#);
+        insta::assert_snapshot!(env.render_ok(r#""he \n ll \n \" o".escape_json()"#), @r#""he \n ll \n \" o""#);
     }
 
     #[test]
@@ -3120,6 +3169,16 @@ mod tests {
                 ++ "Example"
                 ++ "\x1b]8;;\x1B\\")"#),
             @r#"]8;;http://example.com\Example]8;;\"#);
+    }
+
+    #[test]
+    fn test_stringify_function() {
+        let mut env = TestTemplateEnv::new();
+        env.add_color("error", crossterm::style::Color::DarkRed);
+
+        insta::assert_snapshot!(env.render_ok("stringify(false)"), @"false");
+        insta::assert_snapshot!(env.render_ok("stringify(42).len()"), @"2");
+        insta::assert_snapshot!(env.render_ok("stringify(label('error', 'text'))"), @"text");
     }
 
     #[test]

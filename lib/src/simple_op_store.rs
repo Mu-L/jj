@@ -32,6 +32,7 @@ use prost::Message;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
+use crate::backend::BackendInitError;
 use crate::backend::CommitId;
 use crate::backend::MillisSinceEpoch;
 use crate::backend::Timestamp;
@@ -64,18 +65,14 @@ use crate::op_store::WorkspaceId;
 const OPERATION_ID_LENGTH: usize = 64;
 const VIEW_ID_LENGTH: usize = 64;
 
+/// Error that may occur during [`SimpleOpStore`] initialization.
 #[derive(Debug, Error)]
-#[error("Failed to read {kind} with ID {id}")]
-struct DecodeError {
-    kind: &'static str,
-    id: String,
-    #[source]
-    err: prost::DecodeError,
-}
+#[error("Failed to initialize simple operation store")]
+pub struct SimpleOpStoreInitError(#[from] pub PathError);
 
-impl From<DecodeError> for OpStoreError {
-    fn from(err: DecodeError) -> Self {
-        OpStoreError::Other(err.into())
+impl From<SimpleOpStoreInitError> for BackendInitError {
+    fn from(err: SimpleOpStoreInitError) -> Self {
+        BackendInitError(err.into())
     }
 }
 
@@ -92,15 +89,22 @@ impl SimpleOpStore {
         "simple_op_store"
     }
 
-    /// Creates an empty OpStore, panics if it already exists
-    pub fn init(store_path: &Path, root_data: RootOperationData) -> Self {
-        fs::create_dir(store_path.join("views")).unwrap();
-        fs::create_dir(store_path.join("operations")).unwrap();
-        Self::load(store_path, root_data)
+    /// Creates an empty OpStore. Returns error if it already exists.
+    pub fn init(
+        store_path: &Path,
+        root_data: RootOperationData,
+    ) -> Result<Self, SimpleOpStoreInitError> {
+        let store = Self::new(store_path, root_data);
+        store.init_base_dirs()?;
+        Ok(store)
     }
 
     /// Load an existing OpStore
     pub fn load(store_path: &Path, root_data: RootOperationData) -> Self {
+        Self::new(store_path, root_data)
+    }
+
+    fn new(store_path: &Path, root_data: RootOperationData) -> Self {
         SimpleOpStore {
             path: store_path.to_path_buf(),
             root_data,
@@ -109,12 +113,19 @@ impl SimpleOpStore {
         }
     }
 
-    fn view_path(&self, id: &ViewId) -> PathBuf {
-        self.path.join("views").join(id.hex())
+    fn init_base_dirs(&self) -> Result<(), PathError> {
+        for dir in [self.views_dir(), self.operations_dir()] {
+            fs::create_dir(&dir).context(&dir)?;
+        }
+        Ok(())
     }
 
-    fn operation_path(&self, id: &OperationId) -> PathBuf {
-        self.path.join("operations").join(id.hex())
+    fn views_dir(&self) -> PathBuf {
+        self.path.join("views")
+    }
+
+    fn operations_dir(&self) -> PathBuf {
+        self.path.join("operations")
     }
 }
 
@@ -136,20 +147,18 @@ impl OpStore for SimpleOpStore {
             return Ok(View::make_root(self.root_data.root_commit_id.clone()));
         }
 
-        let path = self.view_path(id);
+        let path = self.views_dir().join(id.hex());
         let buf = fs::read(path).map_err(|err| io_to_read_error(err, id))?;
 
-        let proto = crate::protos::op_store::View::decode(&*buf).map_err(|err| DecodeError {
-            kind: "view",
-            id: id.hex(),
-            err,
-        })?;
+        let proto = crate::protos::op_store::View::decode(&*buf)
+            .map_err(|err| to_read_error(err.into(), id))?;
         Ok(view_from_proto(proto))
     }
 
     fn write_view(&self, view: &View) -> OpStoreResult<ViewId> {
+        let dir = self.views_dir();
         let temp_file =
-            NamedTempFile::new_in(&self.path).map_err(|err| io_to_write_error(err, "view"))?;
+            NamedTempFile::new_in(&dir).map_err(|err| io_to_write_error(err, "view"))?;
 
         let proto = view_to_proto(view);
         temp_file
@@ -159,7 +168,7 @@ impl OpStore for SimpleOpStore {
 
         let id = ViewId::new(blake2b_hash(view).to_vec());
 
-        persist_content_addressed_temp_file(temp_file, self.view_path(&id))
+        persist_content_addressed_temp_file(temp_file, dir.join(id.hex()))
             .map_err(|err| io_to_write_error(err, "view"))?;
         Ok(id)
     }
@@ -169,16 +178,13 @@ impl OpStore for SimpleOpStore {
             return Ok(Operation::make_root(self.root_view_id.clone()));
         }
 
-        let path = self.operation_path(id);
+        let path = self.operations_dir().join(id.hex());
         let buf = fs::read(path).map_err(|err| io_to_read_error(err, id))?;
 
-        let proto =
-            crate::protos::op_store::Operation::decode(&*buf).map_err(|err| DecodeError {
-                kind: "operation",
-                id: id.hex(),
-                err,
-            })?;
-        let mut operation = operation_from_proto(proto);
+        let proto = crate::protos::op_store::Operation::decode(&*buf)
+            .map_err(|err| to_read_error(err.into(), id))?;
+        let mut operation =
+            operation_from_proto(proto).map_err(|err| to_read_error(err.into(), id))?;
         if operation.parents.is_empty() {
             // Repos created before we had the root operation will have an operation without
             // parents.
@@ -189,8 +195,9 @@ impl OpStore for SimpleOpStore {
 
     fn write_operation(&self, operation: &Operation) -> OpStoreResult<OperationId> {
         assert!(!operation.parents.is_empty());
+        let dir = self.operations_dir();
         let temp_file =
-            NamedTempFile::new_in(&self.path).map_err(|err| io_to_write_error(err, "operation"))?;
+            NamedTempFile::new_in(&dir).map_err(|err| io_to_write_error(err, "operation"))?;
 
         let proto = operation_to_proto(operation);
         temp_file
@@ -200,7 +207,7 @@ impl OpStore for SimpleOpStore {
 
         let id = OperationId::new(blake2b_hash(operation).to_vec());
 
-        persist_content_addressed_temp_file(temp_file, self.operation_path(&id))
+        persist_content_addressed_temp_file(temp_file, dir.join(id.hex()))
             .map_err(|err| io_to_write_error(err, "operation"))?;
         Ok(id)
     }
@@ -209,7 +216,7 @@ impl OpStore for SimpleOpStore {
         &self,
         prefix: &HexPrefix,
     ) -> OpStoreResult<PrefixResolution<OperationId>> {
-        let op_dir = self.path.join("operations");
+        let op_dir = self.operations_dir();
         let find = || -> io::Result<_> {
             let matches_root = prefix.matches(&self.root_operation_id);
             let hex_prefix = prefix.hex();
@@ -294,7 +301,7 @@ impl OpStore for SimpleOpStore {
         );
 
         let prune_ops = || -> Result<(), PathError> {
-            let op_dir = self.path.join("operations");
+            let op_dir = self.operations_dir();
             for entry in op_dir.read_dir().context(&op_dir)? {
                 let entry = entry.context(&op_dir)?;
                 let Some(id) = to_op_id(&entry) else {
@@ -314,7 +321,7 @@ impl OpStore for SimpleOpStore {
         prune_ops().map_err(|err| OpStoreError::Other(err.into()))?;
 
         let prune_views = || -> Result<(), PathError> {
-            let view_dir = self.path.join("views");
+            let view_dir = self.views_dir();
             for entry in view_dir.read_dir().context(&view_dir)? {
                 let entry = entry.context(&view_dir)?;
                 let Some(id) = to_view_id(&entry) else {
@@ -342,11 +349,18 @@ fn io_to_read_error(err: std::io::Error, id: &impl ObjectId) -> OpStoreError {
             source: Box::new(err),
         }
     } else {
-        OpStoreError::ReadObject {
-            object_type: id.object_type(),
-            hash: id.hex(),
-            source: Box::new(err),
-        }
+        to_read_error(err.into(), id)
+    }
+}
+
+fn to_read_error(
+    source: Box<dyn std::error::Error + Send + Sync>,
+    id: &impl ObjectId,
+) -> OpStoreError {
+    OpStoreError::ReadObject {
+        object_type: id.object_type(),
+        hash: id.hex(),
+        source,
     }
 }
 
@@ -354,6 +368,34 @@ fn io_to_write_error(err: std::io::Error, object_type: &'static str) -> OpStoreE
     OpStoreError::WriteObject {
         object_type,
         source: Box::new(err),
+    }
+}
+
+#[derive(Debug, Error)]
+enum PostDecodeError {
+    #[error("Invalid hash length (expected {expected} bytes, got {actual} bytes)")]
+    InvalidHashLength { expected: usize, actual: usize },
+}
+
+fn operation_id_from_proto(bytes: Vec<u8>) -> Result<OperationId, PostDecodeError> {
+    if bytes.len() != OPERATION_ID_LENGTH {
+        Err(PostDecodeError::InvalidHashLength {
+            expected: OPERATION_ID_LENGTH,
+            actual: bytes.len(),
+        })
+    } else {
+        Ok(OperationId::new(bytes))
+    }
+}
+
+fn view_id_from_proto(bytes: Vec<u8>) -> Result<ViewId, PostDecodeError> {
+    if bytes.len() != VIEW_ID_LENGTH {
+        Err(PostDecodeError::InvalidHashLength {
+            expected: VIEW_ID_LENGTH,
+            actual: bytes.len(),
+        })
+    } else {
+        Ok(ViewId::new(bytes))
     }
 }
 
@@ -413,15 +455,21 @@ fn operation_to_proto(operation: &Operation) -> crate::protos::op_store::Operati
     proto
 }
 
-fn operation_from_proto(proto: crate::protos::op_store::Operation) -> Operation {
-    let parents = proto.parents.into_iter().map(OperationId::new).collect();
-    let view_id = ViewId::new(proto.view_id);
+fn operation_from_proto(
+    proto: crate::protos::op_store::Operation,
+) -> Result<Operation, PostDecodeError> {
+    let parents = proto
+        .parents
+        .into_iter()
+        .map(operation_id_from_proto)
+        .try_collect()?;
+    let view_id = view_id_from_proto(proto.view_id)?;
     let metadata = operation_metadata_from_proto(proto.metadata.unwrap_or_default());
-    Operation {
+    Ok(Operation {
         view_id,
         parents,
         metadata,
-    }
+    })
 }
 
 fn view_to_proto(view: &View) -> crate::protos::op_store::View {
@@ -460,6 +508,7 @@ fn view_to_proto(view: &View) -> crate::protos::op_store::View {
 }
 
 fn view_from_proto(proto: crate::protos::op_store::View) -> View {
+    // TODO: validate commit id length?
     let mut view = View::empty();
     // For compatibility with old repos before we had support for multiple working
     // copies
@@ -678,6 +727,7 @@ mod tests {
     use maplit::hashset;
 
     use super::*;
+    use crate::tests::new_temp_dir;
 
     fn create_view() -> View {
         let new_remote_ref = |target: &RefTarget| RemoteRef {
@@ -730,11 +780,16 @@ mod tests {
     }
 
     fn create_operation() -> Operation {
+        let pad_id_bytes = |hex: &str, len: usize| {
+            let mut bytes = hex::decode(hex).unwrap();
+            bytes.resize(len, b'\0');
+            bytes
+        };
         Operation {
-            view_id: ViewId::from_hex("aaa111"),
+            view_id: ViewId::new(pad_id_bytes("aaa111", VIEW_ID_LENGTH)),
             parents: vec![
-                OperationId::from_hex("bbb111"),
-                OperationId::from_hex("bbb222"),
+                OperationId::new(pad_id_bytes("bbb111", OPERATION_ID_LENGTH)),
+                OperationId::new(pad_id_bytes("bbb222", OPERATION_ID_LENGTH)),
             ],
             metadata: OperationMetadata {
                 start_time: Timestamp {
@@ -771,17 +826,17 @@ mod tests {
         // Test exact output so we detect regressions in compatibility
         assert_snapshot!(
             OperationId::new(blake2b_hash(&create_operation()).to_vec()).hex(),
-            @"20b495d54aa3be3a672a2ed6dbbf7a711dabce4cc0161d657e5177070491c1e780eec3fd35c2aa9dcc22371462aeb412a502a847f29419e65718f56a0ad1b2d0"
+            @"a721c8bfe6d30b4279437722417743c2c5d9efe731942663e3e7d37320e0ab6b49a7c1452d101cc427ceb8927a4cab03d49dabe73c0677bb9edf5c8b2aa83585"
         );
     }
 
     #[test]
     fn test_read_write_view() {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let root_data = RootOperationData {
             root_commit_id: CommitId::from_hex("000000"),
         };
-        let store = SimpleOpStore::init(temp_dir.path(), root_data);
+        let store = SimpleOpStore::init(temp_dir.path(), root_data).unwrap();
         let view = create_view();
         let view_id = store.write_view(&view).unwrap();
         let read_view = store.read_view(&view_id).unwrap();
@@ -790,11 +845,11 @@ mod tests {
 
     #[test]
     fn test_read_write_operation() {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let root_data = RootOperationData {
             root_commit_id: CommitId::from_hex("000000"),
         };
-        let store = SimpleOpStore::init(temp_dir.path(), root_data);
+        let store = SimpleOpStore::init(temp_dir.path(), root_data).unwrap();
         let operation = create_operation();
         let op_id = store.write_operation(&operation).unwrap();
         let read_operation = store.read_operation(&op_id).unwrap();

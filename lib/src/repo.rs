@@ -78,6 +78,7 @@ use crate::refs::diff_named_ref_targets;
 use crate::refs::diff_named_remote_refs;
 use crate::refs::merge_ref_targets;
 use crate::refs::merge_remote_refs;
+use crate::refs::RemoteRefSymbol;
 use crate::revset;
 use crate::revset::RevsetExpression;
 use crate::revset::RevsetIteratorExt;
@@ -157,14 +158,13 @@ pub enum RepoInitError {
 
 impl ReadonlyRepo {
     pub fn default_op_store_initializer() -> &'static OpStoreInitializer<'static> {
-        &|_settings, store_path, root_data| Box::new(SimpleOpStore::init(store_path, root_data))
+        &|_settings, store_path, root_data| {
+            Ok(Box::new(SimpleOpStore::init(store_path, root_data)?))
+        }
     }
 
     pub fn default_op_heads_store_initializer() -> &'static OpHeadsStoreInitializer<'static> {
-        &|_settings, store_path| {
-            let store = SimpleOpHeadsStore::init(store_path);
-            Box::new(store)
-        }
+        &|_settings, store_path| Ok(Box::new(SimpleOpHeadsStore::init(store_path)?))
     }
 
     pub fn default_index_store_initializer() -> &'static IndexStoreInitializer<'static> {
@@ -172,7 +172,7 @@ impl ReadonlyRepo {
     }
 
     pub fn default_submodule_store_initializer() -> &'static SubmoduleStoreInitializer<'static> {
-        &|_settings, store_path| Box::new(DefaultSubmoduleStore::init(store_path))
+        &|_settings, store_path| Ok(Box::new(DefaultSubmoduleStore::init(store_path)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -200,14 +200,14 @@ impl ReadonlyRepo {
         let root_op_data = RootOperationData {
             root_commit_id: store.root_commit_id().clone(),
         };
-        let op_store = op_store_initializer(settings, &op_store_path, root_op_data);
+        let op_store = op_store_initializer(settings, &op_store_path, root_op_data)?;
         let op_store_type_path = op_store_path.join("type");
         fs::write(&op_store_type_path, op_store.name()).context(&op_store_type_path)?;
         let op_store: Arc<dyn OpStore> = Arc::from(op_store);
 
         let op_heads_path = repo_path.join("op_heads");
         fs::create_dir(&op_heads_path).context(&op_heads_path)?;
-        let op_heads_store = op_heads_store_initializer(settings, &op_heads_path);
+        let op_heads_store = op_heads_store_initializer(settings, &op_heads_path)?;
         let op_heads_type_path = op_heads_path.join("type");
         fs::write(&op_heads_type_path, op_heads_store.name()).context(&op_heads_type_path)?;
         op_heads_store.update_op_heads(&[], op_store.root_operation_id())?;
@@ -222,7 +222,7 @@ impl ReadonlyRepo {
 
         let submodule_store_path = repo_path.join("submodule_store");
         fs::create_dir(&submodule_store_path).context(&submodule_store_path)?;
-        let submodule_store = submodule_store_initializer(settings, &submodule_store_path);
+        let submodule_store = submodule_store_initializer(settings, &submodule_store_path)?;
         let submodule_store_type_path = submodule_store_path.join("type");
         fs::write(&submodule_store_type_path, submodule_store.name())
             .context(&submodule_store_type_path)?;
@@ -347,21 +347,28 @@ impl Repo for ReadonlyRepo {
 
 pub type BackendInitializer<'a> =
     dyn Fn(&UserSettings, &Path) -> Result<Box<dyn Backend>, BackendInitError> + 'a;
+#[rustfmt::skip] // auto-formatted line would exceed the maximum width
 pub type OpStoreInitializer<'a> =
-    dyn Fn(&UserSettings, &Path, RootOperationData) -> Box<dyn OpStore> + 'a;
-pub type OpHeadsStoreInitializer<'a> = dyn Fn(&UserSettings, &Path) -> Box<dyn OpHeadsStore> + 'a;
+    dyn Fn(&UserSettings, &Path, RootOperationData) -> Result<Box<dyn OpStore>, BackendInitError>
+    + 'a;
+pub type OpHeadsStoreInitializer<'a> =
+    dyn Fn(&UserSettings, &Path) -> Result<Box<dyn OpHeadsStore>, BackendInitError> + 'a;
 pub type IndexStoreInitializer<'a> =
     dyn Fn(&UserSettings, &Path) -> Result<Box<dyn IndexStore>, BackendInitError> + 'a;
 pub type SubmoduleStoreInitializer<'a> =
-    dyn Fn(&UserSettings, &Path) -> Box<dyn SubmoduleStore> + 'a;
+    dyn Fn(&UserSettings, &Path) -> Result<Box<dyn SubmoduleStore>, BackendInitError> + 'a;
 
 type BackendFactory =
     Box<dyn Fn(&UserSettings, &Path) -> Result<Box<dyn Backend>, BackendLoadError>>;
-type OpStoreFactory = Box<dyn Fn(&UserSettings, &Path, RootOperationData) -> Box<dyn OpStore>>;
-type OpHeadsStoreFactory = Box<dyn Fn(&UserSettings, &Path) -> Box<dyn OpHeadsStore>>;
+type OpStoreFactory = Box<
+    dyn Fn(&UserSettings, &Path, RootOperationData) -> Result<Box<dyn OpStore>, BackendLoadError>,
+>;
+type OpHeadsStoreFactory =
+    Box<dyn Fn(&UserSettings, &Path) -> Result<Box<dyn OpHeadsStore>, BackendLoadError>>;
 type IndexStoreFactory =
     Box<dyn Fn(&UserSettings, &Path) -> Result<Box<dyn IndexStore>, BackendLoadError>>;
-type SubmoduleStoreFactory = Box<dyn Fn(&UserSettings, &Path) -> Box<dyn SubmoduleStore>>;
+type SubmoduleStoreFactory =
+    Box<dyn Fn(&UserSettings, &Path) -> Result<Box<dyn SubmoduleStore>, BackendLoadError>>;
 
 pub fn merge_factories_map<F>(base: &mut HashMap<String, F>, ext: HashMap<String, F>) {
     for (name, factory) in ext {
@@ -416,14 +423,14 @@ impl Default for StoreFactories {
         factories.add_op_store(
             SimpleOpStore::name(),
             Box::new(|_settings, store_path, root_data| {
-                Box::new(SimpleOpStore::load(store_path, root_data))
+                Ok(Box::new(SimpleOpStore::load(store_path, root_data)))
             }),
         );
 
         // OpHeadsStores
         factories.add_op_heads_store(
             SimpleOpHeadsStore::name(),
-            Box::new(|_settings, store_path| Box::new(SimpleOpHeadsStore::load(store_path))),
+            Box::new(|_settings, store_path| Ok(Box::new(SimpleOpHeadsStore::load(store_path)))),
         );
 
         // Index
@@ -435,7 +442,7 @@ impl Default for StoreFactories {
         // SubmoduleStores
         factories.add_submodule_store(
             DefaultSubmoduleStore::name(),
-            Box::new(|_settings, store_path| Box::new(DefaultSubmoduleStore::load(store_path))),
+            Box::new(|_settings, store_path| Ok(Box::new(DefaultSubmoduleStore::load(store_path)))),
         );
 
         factories
@@ -526,7 +533,7 @@ impl StoreFactories {
                 store_type: op_store_type.to_string(),
             }
         })?;
-        Ok(op_store_factory(settings, store_path, root_data))
+        Ok(op_store_factory(settings, store_path, root_data)?)
     }
 
     pub fn add_op_heads_store(&mut self, name: &str, factory: OpHeadsStoreFactory) {
@@ -547,7 +554,7 @@ impl StoreFactories {
                 store: "operation heads",
                 store_type: op_heads_store_type.to_string(),
             })?;
-        Ok(op_heads_store_factory(settings, store_path))
+        Ok(op_heads_store_factory(settings, store_path)?)
     }
 
     pub fn add_index_store(&mut self, name: &str, factory: IndexStoreFactory) {
@@ -589,7 +596,7 @@ impl StoreFactories {
                 store_type: submodule_store_type.to_string(),
             })?;
 
-        Ok(submodule_store_factory(settings, store_path))
+        Ok(submodule_store_factory(settings, store_path)?)
     }
 }
 
@@ -877,6 +884,7 @@ impl MutableRepo {
     }
 
     pub fn has_changes(&self) -> bool {
+        self.view.ensure_clean(|v| self.enforce_view_invariants(v));
         !(self.parent_mapping.is_empty() && self.view() == &self.base_repo.view)
     }
 
@@ -1521,7 +1529,11 @@ impl MutableRepo {
     }
 
     pub fn set_local_bookmark_target(&mut self, name: &str, target: RefTarget) {
-        self.view_mut().set_local_bookmark_target(name, target);
+        let view = self.view_mut();
+        for id in target.added_ids() {
+            view.add_head(id);
+        }
+        view.set_local_bookmark_target(name, target);
     }
 
     pub fn merge_local_bookmark(
@@ -1534,48 +1546,46 @@ impl MutableRepo {
         let index = self.index.as_index();
         let self_target = view.get_local_bookmark(name);
         let new_target = merge_ref_targets(index, self_target, base_target, other_target);
-        view.set_local_bookmark_target(name, new_target);
+        self.set_local_bookmark_target(name, new_target);
     }
 
-    pub fn get_remote_bookmark(&self, name: &str, remote_name: &str) -> RemoteRef {
+    pub fn get_remote_bookmark(&self, symbol: RemoteRefSymbol<'_>) -> RemoteRef {
         self.view
-            .with_ref(|v| v.get_remote_bookmark(name, remote_name).clone())
+            .with_ref(|v| v.get_remote_bookmark(symbol).clone())
     }
 
-    pub fn set_remote_bookmark(&mut self, name: &str, remote_name: &str, remote_ref: RemoteRef) {
-        self.view_mut()
-            .set_remote_bookmark(name, remote_name, remote_ref);
+    pub fn set_remote_bookmark(&mut self, symbol: RemoteRefSymbol<'_>, remote_ref: RemoteRef) {
+        self.view_mut().set_remote_bookmark(symbol, remote_ref);
     }
 
     fn merge_remote_bookmark(
         &mut self,
-        name: &str,
-        remote_name: &str,
+        symbol: RemoteRefSymbol<'_>,
         base_ref: &RemoteRef,
         other_ref: &RemoteRef,
     ) {
         let view = self.view.get_mut();
         let index = self.index.as_index();
-        let self_ref = view.get_remote_bookmark(name, remote_name);
+        let self_ref = view.get_remote_bookmark(symbol);
         let new_ref = merge_remote_refs(index, self_ref, base_ref, other_ref);
-        view.set_remote_bookmark(name, remote_name, new_ref);
+        view.set_remote_bookmark(symbol, new_ref);
     }
 
     /// Merges the specified remote bookmark in to local bookmark, and starts
     /// tracking it.
-    pub fn track_remote_bookmark(&mut self, name: &str, remote_name: &str) {
-        let mut remote_ref = self.get_remote_bookmark(name, remote_name);
+    pub fn track_remote_bookmark(&mut self, symbol: RemoteRefSymbol<'_>) {
+        let mut remote_ref = self.get_remote_bookmark(symbol);
         let base_target = remote_ref.tracking_target();
-        self.merge_local_bookmark(name, base_target, &remote_ref.target);
+        self.merge_local_bookmark(symbol.name, base_target, &remote_ref.target);
         remote_ref.state = RemoteRefState::Tracking;
-        self.set_remote_bookmark(name, remote_name, remote_ref);
+        self.set_remote_bookmark(symbol, remote_ref);
     }
 
     /// Stops tracking the specified remote bookmark.
-    pub fn untrack_remote_bookmark(&mut self, name: &str, remote_name: &str) {
-        let mut remote_ref = self.get_remote_bookmark(name, remote_name);
+    pub fn untrack_remote_bookmark(&mut self, symbol: RemoteRefSymbol<'_>) {
+        let mut remote_ref = self.get_remote_bookmark(symbol);
         remote_ref.state = RemoteRefState::New;
-        self.set_remote_bookmark(name, remote_name, remote_ref);
+        self.set_remote_bookmark(symbol, remote_ref);
     }
 
     pub fn remove_remote(&mut self, remote_name: &str) {
@@ -1723,8 +1733,8 @@ impl MutableRepo {
 
         let changed_remote_bookmarks =
             diff_named_remote_refs(base.all_remote_bookmarks(), other.all_remote_bookmarks());
-        for ((name, remote_name), (base_ref, other_ref)) in changed_remote_bookmarks {
-            self.merge_remote_bookmark(name, remote_name, base_ref, other_ref);
+        for (symbol, (base_ref, other_ref)) in changed_remote_bookmarks {
+            self.merge_remote_bookmark(symbol, base_ref, other_ref);
         }
 
         let new_git_head_target = merge_ref_targets(

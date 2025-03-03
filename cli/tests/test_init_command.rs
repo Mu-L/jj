@@ -17,23 +17,27 @@ use crate::common::TestEnvironment;
 #[test]
 fn test_init_local_disallowed() {
     let test_env = TestEnvironment::default();
-    let stdout = test_env.jj_cmd_failure(test_env.env_root(), &["init", "repo"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(".", ["init", "repo"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: The native backend is disallowed by default.
     Hint: Did you mean to call `jj git init`?
     Set `ui.allow-init-native` to allow initializing a repo with the native backend.
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
 }
 
 #[test]
 fn test_init_local() {
     let test_env = TestEnvironment::default();
     test_env.add_config(r#"ui.allow-init-native = true"#);
-    let (stdout, stderr) = test_env.jj_cmd_ok(test_env.env_root(), &["init", "repo"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(".", ["init", "repo"]);
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Initialized repo in "repo"
-    "###);
+    [EOF]
+    "#);
 
     let workspace_root = test_env.env_root().join("repo");
     let jj_path = workspace_root.join(".jj");
@@ -50,16 +54,19 @@ fn test_init_local() {
     assert!(store_path.join("symlinks").is_dir());
     assert!(store_path.join("conflicts").is_dir());
 
-    let stderr = test_env.jj_cmd_cli_error(
-        test_env.env_root(),
-        &["init", "--ignore-working-copy", "repo2"],
-    );
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(".", ["init", "--ignore-working-copy", "repo2"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: --ignore-working-copy is not respected
-    "###);
+    [EOF]
+    [exit status: 2]
+    ");
 
-    let stderr = test_env.jj_cmd_cli_error(test_env.env_root(), &["init", "--at-op=@-", "repo3"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(".", ["init", "--at-op=@-", "repo3"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: --at-op is not respected
-    "###);
+    [EOF]
+    [exit status: 2]
+    ");
 }

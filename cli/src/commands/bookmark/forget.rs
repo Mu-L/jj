@@ -17,6 +17,7 @@ use itertools::Itertools as _;
 use jj_lib::op_store::BookmarkTarget;
 use jj_lib::op_store::RefTarget;
 use jj_lib::op_store::RemoteRef;
+use jj_lib::refs::RemoteRefSymbol;
 use jj_lib::str_util::StringPattern;
 use jj_lib::view::View;
 
@@ -26,13 +27,22 @@ use crate::command_error::CommandError;
 use crate::complete;
 use crate::ui::Ui;
 
-/// Forget everything about a bookmark, including its local and remote
-/// targets
+/// Forget a bookmark without marking it as a deletion to be pushed
 ///
-/// A forgotten bookmark will not impact remotes on future pushes. It will be
-/// recreated on future pulls if it still exists in the remote.
+/// If a local bookmark is forgotten, any corresponding remote bookmarks will
+/// become untracked to ensure that the forgotten bookmark will not impact
+/// remotes on future pushes.
 #[derive(clap::Args, Clone, Debug)]
 pub struct BookmarkForgetArgs {
+    /// When forgetting a local bookmark, also forget any corresponding remote
+    /// bookmarks
+    ///
+    /// A forgotten remote bookmark will not impact remotes on future pushes. It
+    /// will be recreated on future fetches if it still exists on the remote. If
+    /// there is a corresponding Git-tracking remote bookmark, it will also be
+    /// forgotten.
+    #[arg(long)]
+    include_remotes: bool,
     /// The bookmarks to forget
     ///
     /// By default, the specified name matches exactly. Use `glob:` prefix to
@@ -57,22 +67,37 @@ pub fn cmd_bookmark_forget(
     let repo = workspace_command.repo().clone();
     let matched_bookmarks = find_forgettable_bookmarks(repo.view(), &args.names)?;
     let mut tx = workspace_command.start_transaction();
+    let mut forgotten_remote: usize = 0;
     for (name, bookmark_target) in &matched_bookmarks {
         tx.repo_mut()
             .set_local_bookmark_target(name, RefTarget::absent());
-        for (remote_name, _) in &bookmark_target.remote_refs {
-            tx.repo_mut()
-                .set_remote_bookmark(name, remote_name, RemoteRef::absent());
+        for (remote, _) in &bookmark_target.remote_refs {
+            let symbol = RemoteRefSymbol { name, remote };
+            // If `--include-remotes` is specified, we forget the corresponding remote
+            // bookmarks instead of untracking them
+            if args.include_remotes {
+                tx.repo_mut()
+                    .set_remote_bookmark(symbol, RemoteRef::absent());
+                forgotten_remote += 1;
+                continue;
+            }
+            // Git-tracking remote bookmarks cannot be untracked currently, so skip them
+            if jj_lib::git::is_special_git_remote(symbol.remote) {
+                continue;
+            }
+            tx.repo_mut().untrack_remote_bookmark(symbol);
         }
     }
-    writeln!(ui.status(), "Forgot {} bookmarks.", matched_bookmarks.len())?;
-    tx.finish(
-        ui,
-        format!(
-            "forget bookmark {}",
-            matched_bookmarks.iter().map(|(name, _)| name).join(", ")
-        ),
+    writeln!(
+        ui.status(),
+        "Forgot {} local bookmarks.",
+        matched_bookmarks.len()
     )?;
+    if forgotten_remote != 0 {
+        writeln!(ui.status(), "Forgot {forgotten_remote} remote bookmarks.")?;
+    }
+    let forgotten_bookmarks = matched_bookmarks.iter().map(|(name, _)| name).join(", ");
+    tx.finish(ui, format!("forget bookmark {forgotten_bookmarks}"))?;
     Ok(())
 }
 
