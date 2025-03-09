@@ -21,6 +21,7 @@ use jj_lib::file_util;
 use jj_lib::git;
 use jj_lib::git::parse_git_ref;
 use jj_lib::git::RefName;
+use jj_lib::refs::RemoteRefSymbol;
 use jj_lib::repo::ReadonlyRepo;
 use jj_lib::repo::Repo;
 use jj_lib::workspace::Workspace;
@@ -239,13 +240,13 @@ pub fn maybe_set_repository_level_trunk_alias(
     let git_repo = get_git_repo(workspace_command.repo().store())?;
     if let Ok(reference) = git_repo.find_reference("refs/remotes/origin/HEAD") {
         if let Some(reference_name) = reference.symbolic_target() {
-            if let Some(RefName::RemoteBranch { branch, .. }) = parse_git_ref(reference_name) {
-                write_repository_level_trunk_alias(
-                    ui,
-                    workspace_command.repo_path(),
-                    "origin",
-                    &branch,
-                )?;
+            if let Some(RefName::RemoteBranch(symbol)) = parse_git_ref(reference_name) {
+                // TODO: Can we assume the symbolic target points to the same remote?
+                let symbol = RemoteRefSymbol {
+                    name: &symbol.name,
+                    remote: "origin",
+                };
+                write_repository_level_trunk_alias(ui, workspace_command.repo_path(), symbol)?;
             }
         };
     };

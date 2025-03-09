@@ -4,7 +4,6 @@
 amend = ["squash"]
 b = ["bookmark"]
 ci = ["commit"]
-unamend = ["unsquash"]
 
 [diff.color-words]
 max-inline-alternation = 3
@@ -20,7 +19,6 @@ push-new-bookmarks = false
 sign-on-push = false
 
 [ui]
-allow-init-native = false
 always-allow-large-revsets = false
 color = "auto"
 default-description = ""
@@ -47,3 +45,9 @@ wrapping = "anywhere"
 max-new-file-size = "1MiB"
 auto-track = "all()"
 auto-update-stale = false
+
+# TODO: https://github.com/jj-vcs/jj/issues/3419 - Remove when fully deprecated.
+# The behavior when this flag is set to false is experimental and may be changed
+# in the future.
+[split]
+legacy-bookmark-behavior = true

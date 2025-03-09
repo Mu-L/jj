@@ -80,18 +80,17 @@ impl UiOutput {
     }
 
     fn new_builtin_paged(config: &StreampagerConfig) -> streampager::Result<UiOutput> {
-        // This uselessly reads ~/.config/streampager/streampager.toml, even
-        // though we then override the important options.
-        // TODO(ilyagr): Fix this once a version of streampager with
-        // https://github.com/facebook/sapling/pull/1011 is released.
-        let mut pager = streampager::Pager::new_using_stdio()?;
-        pager.set_wrapping_mode(config.wrapping);
-        pager.set_interface_mode(config.streampager_interface_mode());
-        // We could make scroll-past-eof configurable, but I'm guessing people
-        // will not miss it. If we do make it configurable, we should mention
-        // that it's a bad idea to turn this on if `interface=quit-if-one-page`,
-        // as it can leave a lot of empty lines on the screen after exiting.
-        pager.set_scroll_past_eof(false);
+        let streampager_config = streampager::config::Config {
+            wrapping_mode: config.wrapping.into(),
+            interface_mode: config.streampager_interface_mode(),
+            // We could make scroll-past-eof configurable, but I'm guessing people
+            // will not miss it. If we do make it configurable, we should mention
+            // that it's a bad idea to turn this on if `interface=quit-if-one-page`,
+            // as it can leave a lot of empty lines on the screen after exiting.
+            scroll_past_eof: false,
+            ..Default::default()
+        };
+        let mut pager = streampager::Pager::new_using_stdio_with_config(streampager_config)?;
 
         // Use native pipe, which can be attached to child process. The stdout
         // stream could be an in-process channel, but the cost of extra syscalls
@@ -331,7 +330,7 @@ impl PagerConfig {
             CommandNameAndArgs::String(name) if name == BUILTIN_PAGER_NAME => {
                 Ok(PagerConfig::Builtin(config.get("ui.streampager")?))
             }
-            _ => Ok(PagerConfig::External(config.get("ui.pager")?)),
+            pager_command => Ok(PagerConfig::External(pager_command)),
         }
     }
 }
@@ -725,7 +724,7 @@ fn duplicate_child_stdin(stdin: &ChildStdin) -> io::Result<std::os::windows::io:
     stdin.as_handle().try_clone_to_owned()
 }
 
-fn format_error_with_sources(err: &dyn error::Error) -> impl fmt::Display + '_ {
+fn format_error_with_sources(err: &dyn error::Error) -> impl fmt::Display + use<'_> {
     iter::successors(Some(err), |&err| err.source()).format(": ")
 }
 

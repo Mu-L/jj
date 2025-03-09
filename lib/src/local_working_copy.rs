@@ -385,7 +385,7 @@ impl<'a> FileStates<'a> {
     }
 
     /// Iterates sorted file paths.
-    pub fn paths(&self) -> impl ExactSizeIterator<Item = &'a RepoPath> {
+    pub fn paths(&self) -> impl ExactSizeIterator<Item = &'a RepoPath> + use<'a> {
         self.data
             .iter()
             .map(|entry| RepoPath::from_internal_string(&entry.path))
@@ -847,8 +847,7 @@ impl TreeState {
         Ok(())
     }
 
-    #[allow(unknown_lints)] // XXX FIXME (aseipp): nightly bogons; re-test this occasionally
-    #[allow(clippy::assigning_clones)]
+    #[expect(clippy::assigning_clones)]
     fn save(&mut self) -> Result<(), TreeStateError> {
         let mut proto: crate::protos::working_copy::TreeState = Default::default();
         match &self.tree_id {
@@ -1055,7 +1054,14 @@ impl TreeState {
             let state_paths: HashSet<_> = file_states.paths().map(|path| path.to_owned()).collect();
             assert_eq!(state_paths, tree_paths);
         }
-        self.watchman_clock = watchman_clock;
+        // Since untracked paths aren't cached in the tree state, we'll need to
+        // rescan the working directory changes to report or track them later.
+        // TODO: store untracked paths and update watchman_clock?
+        if stats.untracked_paths.is_empty() || watchman_clock.is_none() {
+            self.watchman_clock = watchman_clock;
+        } else {
+            tracing::info!("not updating watchman clock because there are untracked files");
+        }
         Ok((is_dirty, stats))
     }
 
@@ -2211,7 +2217,7 @@ impl WorkingCopyFactory for LocalWorkingCopyFactory {
 /// `finish()` or `discard()`.
 pub struct LockedLocalWorkingCopy {
     wc: LocalWorkingCopy,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     lock: FileLock,
     old_operation_id: OperationId,
     old_tree_id: MergedTreeId,
@@ -2260,16 +2266,20 @@ impl LockedWorkingCopy for LockedLocalWorkingCopy {
         // TODO: Write a "pending_checkout" file with the new TreeId so we can
         // continue an interrupted update if we find such a file.
         let new_tree = commit.tree()?;
-        let stats = self
+        let tree_state = self
             .wc
             .tree_state_mut()
             .map_err(|err| CheckoutError::Other {
                 message: "Failed to load the working copy state".to_string(),
                 err: err.into(),
-            })?
-            .check_out(&new_tree, options)?;
-        self.tree_state_dirty = true;
-        Ok(stats)
+            })?;
+        if tree_state.tree_id != *commit.tree_id() {
+            let stats = tree_state.check_out(&new_tree, options)?;
+            self.tree_state_dirty = true;
+            Ok(stats)
+        } else {
+            Ok(CheckoutStats::default())
+        }
     }
 
     fn rename_workspace(&mut self, new_workspace_id: WorkspaceId) {

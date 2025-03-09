@@ -14,102 +14,84 @@
 use std::path::Path;
 
 use test_case::test_case;
+use testutils::git;
 
-use crate::common::get_stderr_string;
+use crate::common::create_commit;
+use crate::common::CommandOutput;
 use crate::common::TestEnvironment;
 
-fn add_commit_to_branch(git_repo: &git2::Repository, branch: &str) -> git2::Oid {
-    let signature = git2_signature();
-    let mut tree_builder = git_repo.treebuilder(None).unwrap();
-    let file_oid = git_repo.blob(branch.as_bytes()).unwrap();
-    tree_builder
-        .insert("file", file_oid, git2::FileMode::Blob.into())
-        .unwrap();
-    let tree_oid = tree_builder.write().unwrap();
-    let tree = git_repo.find_tree(tree_oid).unwrap();
-    git_repo
-        .commit(
-            Some(&format!("refs/heads/{branch}")),
-            &signature,
-            &signature,
-            "message",
-            &tree,
-            &[],
-        )
-        .unwrap()
-}
-
-fn git2_signature() -> git2::Signature<'static> {
-    git2::Signature::new("Some One", "some.one@example.com", &git2::Time::new(0, 0)).unwrap()
+fn add_commit_to_branch(git_repo: &gix::Repository, branch: &str) -> gix::ObjectId {
+    git::add_commit(
+        git_repo,
+        &format!("refs/heads/{branch}"),
+        branch,            // filename
+        branch.as_bytes(), // content
+        "message",
+        &[],
+    )
+    .commit_id
 }
 
 /// Creates a remote Git repo containing a bookmark with the same name
-fn init_git_remote(test_env: &TestEnvironment, remote: &str) -> git2::Repository {
+fn init_git_remote(test_env: &TestEnvironment, remote: &str) -> gix::Repository {
     let git_repo_path = test_env.env_root().join(remote);
-    let git_repo = git2::Repository::init(git_repo_path).unwrap();
+    let git_repo = git::init(git_repo_path);
     add_commit_to_branch(&git_repo, remote);
 
     git_repo
 }
 
 /// Add a remote containing a bookmark with the same name
-fn add_git_remote(test_env: &TestEnvironment, repo_path: &Path, remote: &str) -> git2::Repository {
+fn add_git_remote(test_env: &TestEnvironment, repo_path: &Path, remote: &str) -> gix::Repository {
     let repo = init_git_remote(test_env, remote);
-    test_env.jj_cmd_ok(
-        repo_path,
-        &["git", "remote", "add", remote, &format!("../{remote}")],
-    );
+    test_env
+        .run_jj_in(
+            repo_path,
+            ["git", "remote", "add", remote, &format!("../{remote}")],
+        )
+        .success();
 
     repo
 }
 
-fn get_bookmark_output(test_env: &TestEnvironment, repo_path: &Path) -> String {
+#[must_use]
+fn get_bookmark_output(test_env: &TestEnvironment, repo_path: &Path) -> CommandOutput {
     // --quiet to suppress deleted bookmarks hint
-    test_env.jj_cmd_success(repo_path, &["bookmark", "list", "--all-remotes", "--quiet"])
+    test_env.run_jj_in(repo_path, ["bookmark", "list", "--all-remotes", "--quiet"])
 }
 
-fn create_commit(test_env: &TestEnvironment, repo_path: &Path, name: &str, parents: &[&str]) {
-    let descr = format!("descr_for_{name}");
-    if parents.is_empty() {
-        test_env.jj_cmd_ok(repo_path, &["new", "root()", "-m", &descr]);
-    } else {
-        let mut args = vec!["new", "-m", &descr];
-        args.extend(parents);
-        test_env.jj_cmd_ok(repo_path, &args);
-    }
-    std::fs::write(repo_path.join(name), format!("{name}\n")).unwrap();
-    test_env.jj_cmd_ok(repo_path, &["bookmark", "create", name]);
-}
-
-fn get_log_output(test_env: &TestEnvironment, workspace_root: &Path) -> String {
-    let template = r#"commit_id.short() ++ " " ++ description.first_line() ++ " " ++ bookmarks"#;
-    test_env.jj_cmd_success(workspace_root, &["log", "-T", template, "-r", "all()"])
+#[must_use]
+fn get_log_output(test_env: &TestEnvironment, workspace_root: &Path) -> CommandOutput {
+    let template =
+        r#"commit_id.short() ++ " \"" ++ description.first_line() ++ "\" " ++ bookmarks"#;
+    test_env.run_jj_in(workspace_root, ["log", "-T", template, "-r", "all()"])
 }
 
 fn clone_git_remote_into(
     test_env: &TestEnvironment,
     upstream: &str,
     fork: &str,
-) -> git2::Repository {
+) -> gix::Repository {
     let upstream_path = test_env.env_root().join(upstream);
     let fork_path = test_env.env_root().join(fork);
-    let fork_repo = git2::Repository::init(fork_path).unwrap();
-    {
-        let mut upstream_remote = fork_repo
-            .remote(upstream, upstream_path.to_str().unwrap())
-            .unwrap();
-        upstream_remote.fetch(&[upstream], None, None).unwrap();
+    let fork_repo = git::clone(&fork_path, upstream_path.to_str().unwrap(), Some(upstream));
 
-        // create local branch mirroring the upstream
-        let upstream_head = fork_repo
-            .find_branch("upstream/upstream", git2::BranchType::Remote)
-            .unwrap()
-            .into_reference()
-            .peel_to_commit()
-            .unwrap();
+    // create local branch mirroring the upstream
+    let upstream_head = fork_repo
+        .find_reference(&format!("refs/remotes/{upstream}/{upstream}"))
+        .unwrap()
+        .peel_to_id_in_place()
+        .unwrap()
+        .detach();
 
-        fork_repo.branch("upstream", &upstream_head, false).unwrap();
-    }
+    fork_repo
+        .reference(
+            format!("refs/heads/{upstream}"),
+            upstream_head,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "create tracking head",
+        )
+        .unwrap();
 
     fork_repo
 }
@@ -121,15 +103,16 @@ fn test_git_fetch_with_default_config(subprocess: bool) {
     if !subprocess {
         test_env.add_config("git.subprocess = false");
     }
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "origin");
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    origin@origin: oputwtnw ffecd2d6 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    origin@origin: qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 }
 
@@ -141,16 +124,17 @@ fn test_git_fetch_default_remote(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "origin");
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    origin: oputwtnw ffecd2d6 message
-      @origin: oputwtnw ffecd2d6 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    origin: qmyrypzk ab8b299e message
+      @origin: qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 }
 
@@ -162,22 +146,25 @@ fn test_git_fetch_single_remote(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
 
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Hint: Fetching from the only existing remote: rem1
     bookmark: rem1@rem1 [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    [EOF]
+    ");
     }
 }
 
@@ -189,19 +176,19 @@ fn test_git_fetch_single_remote_all_remotes_flag(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
 
     test_env
-        .jj_cmd(&repo_path, &["git", "fetch", "--all-remotes"])
-        .assert()
+        .run_jj_in(&repo_path, ["git", "fetch", "--all-remotes"])
         .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    [EOF]
+    ");
     }
 }
 
@@ -213,16 +200,19 @@ fn test_git_fetch_single_remote_from_arg(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--remote", "rem1"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "fetch", "--remote", "rem1"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    [EOF]
+    ");
     }
 }
 
@@ -234,17 +224,18 @@ fn test_git_fetch_single_remote_from_config(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
     test_env.add_config(r#"git.fetch = "rem1""#);
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    [EOF]
+    ");
     }
 }
 
@@ -256,22 +247,129 @@ fn test_git_fetch_multiple_remotes(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
     add_git_remote(&test_env, &repo_path, "rem2");
 
-    test_env.jj_cmd_ok(
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["git", "fetch", "--remote", "rem1", "--remote", "rem2"],
+        )
+        .success();
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    rem2: pzqqpnpo 44c57802 message
+      @rem2: pzqqpnpo 44c57802 message
+    [EOF]
+    ");
+    }
+}
+
+#[test_case(false; "use git2 for remote calls")]
+#[test_case(true; "spawn a git subprocess for remote calls")]
+fn test_git_fetch_with_glob(subprocess: bool) {
+    let test_env = TestEnvironment::default();
+    if !subprocess {
+        test_env.add_config("git.subprocess = false");
+    }
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let repo_path = test_env.env_root().join("repo");
+    add_git_remote(&test_env, &repo_path, "rem1");
+    add_git_remote(&test_env, &repo_path, "rem2");
+
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--remote", "glob:*"]);
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    bookmark: rem1@rem1 [new] untracked
+    bookmark: rem2@rem2 [new] untracked
+    [EOF]
+    ");
+    }
+}
+
+#[test_case(false; "use git2 for remote calls")]
+#[test_case(true; "spawn a git subprocess for remote calls")]
+fn test_git_fetch_with_glob_and_exact_match(subprocess: bool) {
+    let test_env = TestEnvironment::default();
+    if !subprocess {
+        test_env.add_config("git.subprocess = false");
+    }
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let repo_path = test_env.env_root().join("repo");
+    add_git_remote(&test_env, &repo_path, "rem1");
+    add_git_remote(&test_env, &repo_path, "rem2");
+    add_git_remote(&test_env, &repo_path, "upstream1");
+    add_git_remote(&test_env, &repo_path, "upstream2");
+    add_git_remote(&test_env, &repo_path, "origin");
+
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["git", "fetch", "--remote", "rem1", "--remote", "rem2"],
+        ["git", "fetch", "--remote=glob:rem*", "--remote=origin"],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    rem2: yszkquru 2497a8a0 message
-      @rem2: yszkquru 2497a8a0 message
-    "###);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    bookmark: origin@origin [new] untracked
+    bookmark: rem1@rem1     [new] untracked
+    bookmark: rem2@rem2     [new] untracked
+    [EOF]
+    ");
+    }
+}
+
+#[test_case(false; "use git2 for remote calls")]
+#[test_case(true; "spawn a git subprocess for remote calls")]
+fn test_git_fetch_with_glob_from_config(subprocess: bool) {
+    let test_env = TestEnvironment::default();
+    if !subprocess {
+        test_env.add_config("git.subprocess = false");
+    }
+    test_env.add_config(r#"git.fetch = "glob:rem*""#);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let repo_path = test_env.env_root().join("repo");
+    add_git_remote(&test_env, &repo_path, "rem1");
+    add_git_remote(&test_env, &repo_path, "rem2");
+    add_git_remote(&test_env, &repo_path, "upstream");
+
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch"]);
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    bookmark: rem1@rem1 [new] untracked
+    bookmark: rem2@rem2 [new] untracked
+    [EOF]
+    ");
+    }
+}
+
+#[test_case(false; "use git2 for remote calls")]
+#[test_case(true; "spawn a git subprocess for remote calls")]
+fn test_git_fetch_with_glob_with_no_matching_remotes(subprocess: bool) {
+    let test_env = TestEnvironment::default();
+    if !subprocess {
+        test_env.add_config("git.subprocess = false");
+    }
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let repo_path = test_env.env_root().join("repo");
+    add_git_remote(&test_env, &repo_path, "upstream");
+
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--remote=glob:rem*"]);
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Error: No matching git remotes for patterns: rem*
+    [EOF]
+    [exit status: 1]
+    ");
+    }
+    // No remote should have been fetched as part of the failing transaction
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @"");
     }
 }
 
@@ -283,23 +381,30 @@ fn test_git_fetch_all_remotes(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
     add_git_remote(&test_env, &repo_path, "rem2");
 
     // add empty [remote "rem3"] section to .git/config, which should be ignored
-    test_env.jj_cmd_ok(&repo_path, &["git", "remote", "add", "rem3", "../unknown"]);
-    test_env.jj_cmd_ok(&repo_path, &["git", "remote", "remove", "rem3"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "remote", "add", "rem3", "../unknown"])
+        .success();
+    test_env
+        .run_jj_in(&repo_path, ["git", "remote", "remove", "rem3"])
+        .success();
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--all-remotes"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "fetch", "--all-remotes"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    rem2: yszkquru 2497a8a0 message
-      @rem2: yszkquru 2497a8a0 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    rem2: pzqqpnpo 44c57802 message
+      @rem2: pzqqpnpo 44c57802 message
+    [EOF]
+    ");
     }
 }
 
@@ -311,20 +416,21 @@ fn test_git_fetch_multiple_remotes_from_config(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
     add_git_remote(&test_env, &repo_path, "rem2");
     test_env.add_config(r#"git.fetch = ["rem1", "rem2"]"#);
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    rem2: yszkquru 2497a8a0 message
-      @rem2: yszkquru 2497a8a0 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    rem2: pzqqpnpo 44c57802 message
+      @rem2: pzqqpnpo 44c57802 message
+    [EOF]
+    ");
     }
 }
 
@@ -335,16 +441,21 @@ fn test_git_fetch_nonexistent_remote(subprocess: bool) {
     if !subprocess {
         test_env.add_config("git.subprocess = false");
     }
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
 
-    let stderr = &test_env.jj_cmd_failure(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["git", "fetch", "--remote", "rem1", "--remote", "rem2"],
+        ["git", "fetch", "--remote", "rem1", "--remote", "rem2"],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @"Error: No git remote named 'rem2'");
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Error: No git remote named 'rem2'
+    [EOF]
+    [exit status: 1]
+    ");
     }
     insta::allow_duplicates! {
     // No remote should have been fetched as part of the failing transaction
@@ -359,14 +470,19 @@ fn test_git_fetch_nonexistent_remote_from_config(subprocess: bool) {
     if !subprocess {
         test_env.add_config("git.subprocess = false");
     }
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
     test_env.add_config(r#"git.fetch = ["rem1", "rem2"]"#);
 
-    let stderr = &test_env.jj_cmd_failure(&repo_path, &["git", "fetch"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @"Error: No git remote named 'rem2'");
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Error: No git remote named 'rem2'
+    [EOF]
+    [exit status: 1]
+    ");
     }
     // No remote should have been fetched as part of the failing transaction
     insta::allow_duplicates! {
@@ -385,53 +501,95 @@ fn test_git_fetch_from_remote_named_git(subprocess: bool) {
     let repo_path = test_env.env_root().join("repo");
     init_git_remote(&test_env, "git");
 
-    let git_repo = git2::Repository::init(&repo_path).unwrap();
-    git_repo.remote("git", "../git").unwrap();
+    git::init(&repo_path);
+    git::add_remote(&repo_path, "git", "../git");
 
     // Existing remote named 'git' shouldn't block the repo initialization.
-    test_env.jj_cmd_ok(&repo_path, &["git", "init", "--git-repo=."]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "init", "--git-repo=."])
+        .success();
 
     // Try fetching from the remote named 'git'.
-    let stderr = &test_env.jj_cmd_failure(&repo_path, &["git", "fetch", "--remote=git"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--remote=git"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
-    Error: Failed to import refs from underlying Git repo
-    Caused by: Git remote named 'git' is reserved for local Git repository
-    Hint: Run `jj git remote rename` to give different name.
-    "###);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Error: Git remote named 'git' is reserved for local Git repository
+    Hint: Run `jj git remote rename` to give a different name.
+    [EOF]
+    [exit status: 1]
+    ");
     }
 
+    // Fetch remote refs by using the git CLI.
+    git::fetch(&repo_path, "git");
+
     // Implicit import shouldn't fail because of the remote ref.
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["bookmark", "list", "--all-remotes"]);
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "list", "--all-remotes"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
+    insta::assert_snapshot!(output, @"");
     }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @"");
 
     // Explicit import is an error.
     // (This could be warning if we add mechanism to report ignored refs.)
-    insta::assert_snapshot!(test_env.jj_cmd_failure(&repo_path, &["git", "import"]), @r###"
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(test_env.run_jj_in(&repo_path, ["git", "import"]), @r"
+    ------- stderr -------
     Error: Failed to import refs from underlying Git repo
     Caused by: Git remote named 'git' is reserved for local Git repository
     Hint: Run `jj git remote rename` to give different name.
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
     }
 
     // The remote can be renamed, and the ref can be imported.
-    test_env.jj_cmd_ok(&repo_path, &["git", "remote", "rename", "git", "bar"]);
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["bookmark", "list", "--all-remotes"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "remote", "rename", "git", "bar"])
+        .success();
+    let output = test_env.run_jj_in(&repo_path, ["bookmark", "list", "--all-remotes"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @r###"
-    git: mrylzrtu 76fc7466 message
-      @bar: mrylzrtu 76fc7466 message
-      @git: mrylzrtu 76fc7466 message
-    "###);
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    git: vkponlun 400c483d message
+      @bar: vkponlun 400c483d message
+      @git: vkponlun 400c483d message
+    [EOF]
+    ------- stderr -------
     Done importing changes from the underlying Git repo.
-    "###);
+    [EOF]
+    ");
+    }
+}
+
+#[test_case(false; "use git2 for remote calls")]
+#[test_case(true; "spawn a git subprocess for remote calls")]
+fn test_git_fetch_from_remote_with_slashes(subprocess: bool) {
+    let test_env = TestEnvironment::default();
+    if !subprocess {
+        test_env.add_config("git.subprocess = false");
+    }
+    test_env.add_config("git.auto-local-bookmark = true");
+    let repo_path = test_env.env_root().join("repo");
+    init_git_remote(&test_env, "source");
+
+    git::init(&repo_path);
+    git::add_remote(&repo_path, "slash/origin", "../source");
+
+    // Existing remote with slash shouldn't block the repo initialization.
+    test_env
+        .run_jj_in(&repo_path, ["git", "init", "--git-repo=."])
+        .success();
+
+    // Try fetching from the remote named 'git'.
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--remote=slash/origin"]);
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Error: Git remotes with slashes are incompatible with jj: slash/origin
+    Hint: Run `jj git remote rename` to give a different name.
+    [EOF]
+    [exit status: 1]
+    ");
     }
 }
 
@@ -443,30 +601,38 @@ fn test_git_fetch_prune_before_updating_tips(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     let git_repo = add_git_remote(&test_env, &repo_path, "origin");
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    origin: oputwtnw ffecd2d6 message
-      @origin: oputwtnw ffecd2d6 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    origin: qmyrypzk ab8b299e message
+      @origin: qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 
     // Remove origin bookmark in git repo and create origin/subname
+    let mut origin_reference = git_repo.find_reference("refs/heads/origin").unwrap();
+    let commit_id = origin_reference.peel_to_commit().unwrap().id().detach();
+    origin_reference.delete().unwrap();
     git_repo
-        .find_branch("origin", git2::BranchType::Local)
-        .unwrap()
-        .rename("origin/subname", false)
+        .reference(
+            "refs/heads/origin/subname",
+            commit_id,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "create new reference",
+        )
         .unwrap();
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    origin/subname: oputwtnw ffecd2d6 message
-      @origin: oputwtnw ffecd2d6 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    origin/subname: qmyrypzk ab8b299e message
+      @origin: qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 }
 
@@ -478,31 +644,37 @@ fn test_git_fetch_conflicting_bookmarks(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "rem1");
 
     // Create a rem1 bookmark locally
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "rem1"]);
+    test_env.run_jj_in(&repo_path, ["new", "root()"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "rem1"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     rem1: kkmpptxz fcdbbd73 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     }
 
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["git", "fetch", "--remote", "rem1", "--branch", "glob:*"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["git", "fetch", "--remote", "rem1", "--branch", "glob:*"],
+        )
+        .success();
     // This should result in a CONFLICTED bookmark
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     rem1 (conflicted):
       + kkmpptxz fcdbbd73 (empty) (no description set)
-      + qxosxrvv 6a211027 message
-      @rem1 (behind by 1 commits): qxosxrvv 6a211027 message
-    "###);
+      + ppspxspk 4acd0343 message
+      @rem1 (behind by 1 commits): ppspxspk 4acd0343 message
+    [EOF]
+    ");
     }
 }
 
@@ -515,38 +687,46 @@ fn test_git_fetch_conflicting_bookmarks_colocated(subprocess: bool) {
     }
     test_env.add_config("git.auto-local-bookmark = true");
     let repo_path = test_env.env_root().join("repo");
-    let _git_repo = git2::Repository::init(&repo_path).unwrap();
+    git::init(&repo_path);
     // create_colocated_repo_and_bookmarks_from_trunk1(&test_env, &repo_path);
-    test_env.jj_cmd_ok(&repo_path, &["git", "init", "--git-repo", "."]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "init", "--git-repo", "."])
+        .success();
     add_git_remote(&test_env, &repo_path, "rem1");
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @"");
     }
 
     // Create a rem1 bookmark locally
-    test_env.jj_cmd_ok(&repo_path, &["new", "root()"]);
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "rem1"]);
+    test_env.run_jj_in(&repo_path, ["new", "root()"]).success();
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "rem1"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     rem1: zsuskuln f652c321 (empty) (no description set)
       @git: zsuskuln f652c321 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     }
 
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["git", "fetch", "--remote", "rem1", "--branch", "rem1"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["git", "fetch", "--remote", "rem1", "--branch", "rem1"],
+        )
+        .success();
     // This should result in a CONFLICTED bookmark
     // See https://github.com/jj-vcs/jj/pull/1146#discussion_r1112372340 for the bug this tests for.
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     rem1 (conflicted):
       + zsuskuln f652c321 (empty) (no description set)
-      + qxosxrvv 6a211027 message
+      + ppspxspk 4acd0343 message
       @git (behind by 1 commits): zsuskuln f652c321 (empty) (no description set)
-      @rem1 (behind by 1 commits): qxosxrvv 6a211027 message
-    "###);
+      @rem1 (behind by 1 commits): ppspxspk 4acd0343 message
+    [EOF]
+    ");
     }
 }
 
@@ -557,7 +737,9 @@ fn create_colocated_repo_and_bookmarks_from_trunk1(
     repo_path: &Path,
 ) -> String {
     // Create a colocated repo in `source` to populate it more easily
-    test_env.jj_cmd_ok(repo_path, &["git", "init", "--git-repo", "."]);
+    test_env
+        .run_jj_in(repo_path, ["git", "init", "--git-repo", "."])
+        .success();
     create_commit(test_env, repo_path, "trunk1", &[]);
     create_commit(test_env, repo_path, "a1", &["trunk1"]);
     create_commit(test_env, repo_path, "a2", &["trunk1"]);
@@ -571,7 +753,9 @@ fn create_colocated_repo_and_bookmarks_from_trunk1(
 fn create_trunk2_and_rebase_bookmarks(test_env: &TestEnvironment, repo_path: &Path) -> String {
     create_commit(test_env, repo_path, "trunk2", &["trunk1"]);
     for br in ["a1", "a2", "b"] {
-        test_env.jj_cmd_ok(repo_path, &["rebase", "-b", br, "-d", "trunk2"]);
+        test_env
+            .run_jj_in(repo_path, ["rebase", "-b", br, "-d", "trunk2"])
+            .success();
     }
     format!(
         "   ===== Source git repo contents =====\n{}",
@@ -589,82 +773,83 @@ fn test_git_fetch_all(subprocess: bool) {
     test_env.add_config("git.auto-local-bookmark = true");
     test_env.add_config(r#"revset-aliases."immutable_heads()" = "none()""#);
     let source_git_repo_path = test_env.env_root().join("source");
-    let _git_repo = git2::Repository::init(source_git_repo_path.clone()).unwrap();
+    git::init(source_git_repo_path.clone());
 
     // Clone an empty repo. The target repo is a normal `jj` repo, *not* colocated
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "source", "target"]);
+    let output = test_env.run_jj_in(".", ["git", "clone", "source", "target"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Fetching into new repo in "$TEST_ENV/target"
     Nothing changed.
-    "###);
+    [EOF]
+    "#);
     }
     let target_jj_repo_path = test_env.env_root().join("target");
 
     let source_log =
         create_colocated_repo_and_bookmarks_from_trunk1(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    @  c7d4bdcbc215 descr_for_b b
-    │ ○  decaa3966c83 descr_for_a2 a2
+    @  8cc4df9dd488 "b" b
+    │ ○  e2a95b19b745 "a2" a2
     ├─╯
-    │ ○  359a9a02457d descr_for_a1 a1
+    │ ○  dd42071fe1ad "a1" a1
     ├─╯
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
 
     // Nothing in our repo before the fetch
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r###"
-    @  230dd059e1b0
-    ◆  000000000000
-    "###);
+    insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
+    @  230dd059e1b0 ""
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @"");
     }
-    let (stdout, stderr) = test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-        }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin     [new] tracked
     bookmark: a2@origin     [new] tracked
     bookmark: b@origin      [new] tracked
     bookmark: trunk1@origin [new] tracked
-    "###);
-        }
+    [EOF]
+    ");
+    }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r###"
-    a1: nknoxmzm 359a9a02 descr_for_a1
-      @origin: nknoxmzm 359a9a02 descr_for_a1
-    a2: qkvnknrk decaa396 descr_for_a2
-      @origin: qkvnknrk decaa396 descr_for_a2
-    b: vpupmnsl c7d4bdcb descr_for_b
-      @origin: vpupmnsl c7d4bdcb descr_for_b
-    trunk1: zowqyktl ff36dc55 descr_for_trunk1
-      @origin: zowqyktl ff36dc55 descr_for_trunk1
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r"
+    a1: spvnozwy dd42071f a1
+      @origin: spvnozwy dd42071f a1
+    a2: qnxtrkvv e2a95b19 a2
+      @origin: qnxtrkvv e2a95b19 a2
+    b: lnxrmsmo 8cc4df9d b
+      @origin: lnxrmsmo 8cc4df9d b
+    trunk1: qzywppkx 9929b494 trunk1
+      @origin: qzywppkx 9929b494 trunk1
+    [EOF]
+    ");
         }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1 trunk1
+    │ ○  9929b494c411 "trunk1" trunk1
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 
@@ -672,94 +857,100 @@ fn test_git_fetch_all(subprocess: bool) {
     // First, change the target repo:
     let source_log = create_trunk2_and_rebase_bookmarks(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    ○  babc49226c14 descr_for_b b
-    │ ○  91e46b4b2653 descr_for_a2 a2
+    ○  7c277a6aa3c3 "b" b
+    │ ○  698fed8731d8 "a2" a2
     ├─╯
-    │ ○  0424f6dfc1ff descr_for_a1 a1
+    │ ○  a3f2410627ff "a1" a1
     ├─╯
-    @  8f1f14fbbf42 descr_for_trunk2 trunk2
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    @  e7525a4649e3 "trunk2" trunk2
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
     // Change a bookmark in the source repo as well, so that it becomes conflicted.
-    test_env.jj_cmd_ok(
-        &target_jj_repo_path,
-        &["describe", "b", "-m=new_descr_for_b_to_create_conflict"],
-    );
+    test_env
+        .run_jj_in(
+            &target_jj_repo_path,
+            ["describe", "b", "-m=new_descr_for_b_to_create_conflict"],
+        )
+        .success();
 
     // Our repo before and after fetch
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  061eddbb43ab new_descr_for_b_to_create_conflict b*
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  5b3bc9c99bb3 "new_descr_for_b_to_create_conflict" b*
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1 trunk1
+    │ ○  9929b494c411 "trunk1" trunk1
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r###"
-    a1: nknoxmzm 359a9a02 descr_for_a1
-      @origin: nknoxmzm 359a9a02 descr_for_a1
-    a2: qkvnknrk decaa396 descr_for_a2
-      @origin: qkvnknrk decaa396 descr_for_a2
-    b: vpupmnsl 061eddbb new_descr_for_b_to_create_conflict
-      @origin (ahead by 1 commits, behind by 1 commits): vpupmnsl hidden c7d4bdcb descr_for_b
-    trunk1: zowqyktl ff36dc55 descr_for_trunk1
-      @origin: zowqyktl ff36dc55 descr_for_trunk1
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r"
+    a1: spvnozwy dd42071f a1
+      @origin: spvnozwy dd42071f a1
+    a2: qnxtrkvv e2a95b19 a2
+      @origin: qnxtrkvv e2a95b19 a2
+    b: lnxrmsmo 5b3bc9c9 new_descr_for_b_to_create_conflict
+      @origin (ahead by 1 commits, behind by 1 commits): lnxrmsmo hidden 8cc4df9d b
+    trunk1: qzywppkx 9929b494 trunk1
+      @origin: qzywppkx 9929b494 trunk1
+    [EOF]
+    ");
     }
-    let (stdout, stderr) = test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin     [updated] tracked
     bookmark: a2@origin     [updated] tracked
     bookmark: b@origin      [updated] tracked
     bookmark: trunk2@origin [new] tracked
     Abandoned 2 commits that are no longer reachable.
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r###"
-    a1: quxllqov 0424f6df descr_for_a1
-      @origin: quxllqov 0424f6df descr_for_a1
-    a2: osusxwst 91e46b4b descr_for_a2
-      @origin: osusxwst 91e46b4b descr_for_a2
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r"
+    a1: vrnsrlyk a3f24106 a1
+      @origin: vrnsrlyk a3f24106 a1
+    a2: vlowznwy 698fed87 a2
+      @origin: vlowznwy 698fed87 a2
     b (conflicted):
-      - vpupmnsl hidden c7d4bdcb descr_for_b
-      + vpupmnsl 061eddbb new_descr_for_b_to_create_conflict
-      + vktnwlsu babc4922 descr_for_b
-      @origin (behind by 1 commits): vktnwlsu babc4922 descr_for_b
-    trunk1: zowqyktl ff36dc55 descr_for_trunk1
-      @origin: zowqyktl ff36dc55 descr_for_trunk1
-    trunk2: umznmzko 8f1f14fb descr_for_trunk2
-      @origin: umznmzko 8f1f14fb descr_for_trunk2
-    "###);
+      - lnxrmsmo hidden 8cc4df9d b
+      + lnxrmsmo 5b3bc9c9 new_descr_for_b_to_create_conflict
+      + uulqyxll 7c277a6a b
+      @origin (behind by 1 commits): uulqyxll 7c277a6a b
+    trunk1: qzywppkx 9929b494 trunk1
+      @origin: qzywppkx 9929b494 trunk1
+    trunk2: lzqpwqnx e7525a46 trunk2
+      @origin: lzqpwqnx e7525a46 trunk2
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  babc49226c14 descr_for_b b?? b@origin
-    │ │ ○  91e46b4b2653 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  7c277a6aa3c3 "b" b?? b@origin
+    │ │ ○  698fed8731d8 "a2" a2
     │ ├─╯
-    │ │ ○  0424f6dfc1ff descr_for_a1 a1
+    │ │ ○  a3f2410627ff "a1" a1
     │ ├─╯
-    │ ○  8f1f14fbbf42 descr_for_trunk2 trunk2
-    │ │ ○  061eddbb43ab new_descr_for_b_to_create_conflict b??
+    │ ○  e7525a4649e3 "trunk2" trunk2
+    │ │ ○  5b3bc9c99bb3 "new_descr_for_b_to_create_conflict" b??
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1 trunk1
+    │ ○  9929b494c411 "trunk1" trunk1
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 }
@@ -774,134 +965,143 @@ fn test_git_fetch_some_of_many_bookmarks(subprocess: bool) {
     test_env.add_config("git.auto-local-bookmark = true");
     test_env.add_config(r#"revset-aliases."immutable_heads()" = "none()""#);
     let source_git_repo_path = test_env.env_root().join("source");
-    let _git_repo = git2::Repository::init(source_git_repo_path.clone()).unwrap();
+    git::init(source_git_repo_path.clone());
 
     // Clone an empty repo. The target repo is a normal `jj` repo, *not* colocated
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "source", "target"]);
+    let output = test_env.run_jj_in(".", ["git", "clone", "source", "target"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Fetching into new repo in "$TEST_ENV/target"
     Nothing changed.
-    "###);
+    [EOF]
+    "#);
     }
     let target_jj_repo_path = test_env.env_root().join("target");
 
     let source_log =
         create_colocated_repo_and_bookmarks_from_trunk1(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    @  c7d4bdcbc215 descr_for_b b
-    │ ○  decaa3966c83 descr_for_a2 a2
+    @  8cc4df9dd488 "b" b
+    │ ○  e2a95b19b745 "a2" a2
     ├─╯
-    │ ○  359a9a02457d descr_for_a1 a1
+    │ ○  dd42071fe1ad "a1" a1
     ├─╯
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
 
     // Test an error message
-    let stderr = test_env.jj_cmd_failure(
+    let output = test_env.run_jj_in(
         &target_jj_repo_path,
-        &["git", "fetch", "--branch", "glob:^:a*"],
+        ["git", "fetch", "--branch", "glob:^:a*"],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @"Error: Invalid branch pattern provided. When fetching, branch names and globs may not contain the characters `:`, `^`, `?`, `[`, `]`");
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Error: Invalid branch pattern provided. When fetching, branch names and globs may not contain the characters `:`, `^`, `?`, `[`, `]`
+    [EOF]
+    [exit status: 1]
+    ");
     }
-    let stderr = test_env.jj_cmd_failure(&target_jj_repo_path, &["git", "fetch", "--branch", "a*"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch", "--branch", "a*"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: Branch names may not include `*`.
     Hint: Prefix the pattern with `glob:` to expand `*` as a glob
+    [EOF]
+    [exit status: 1]
     ");
     }
 
     // Nothing in our repo before the fetch
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r###"
-    @  230dd059e1b0
-    ◆  000000000000
-    "###);
+    insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
+    @  230dd059e1b0 ""
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
     // Fetch one bookmark...
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch", "--branch", "b"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch", "--branch", "b"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: b@origin [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ ○  ff36dc55760e descr_for_trunk1
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
     // ...check what the intermediate state looks like...
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r###"
-    b: vpupmnsl c7d4bdcb descr_for_b
-      @origin: vpupmnsl c7d4bdcb descr_for_b
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r"
+    b: lnxrmsmo 8cc4df9d b
+      @origin: lnxrmsmo 8cc4df9d b
+    [EOF]
+    ");
     }
     // ...then fetch two others with a glob.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &target_jj_repo_path,
-        &["git", "fetch", "--branch", "glob:a*"],
+        ["git", "fetch", "--branch", "glob:a*"],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin [new] tracked
     bookmark: a2@origin [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  decaa3966c83 descr_for_a2 a2
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    @  230dd059e1b0 ""
+    │ ○  e2a95b19b745 "a2" a2
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ │ ○  c7d4bdcbc215 descr_for_b b
+    │ │ ○  8cc4df9dd488 "b" b
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
     // Fetching the same bookmark again
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch", "--branch", "a1"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch", "--branch", "a1"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Nothing changed.
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
-    Nothing changed.
-    "###);
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  decaa3966c83 descr_for_a2 a2
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    @  230dd059e1b0 ""
+    │ ○  e2a95b19b745 "a2" a2
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ │ ○  c7d4bdcbc215 descr_for_b b
+    │ │ ○  8cc4df9dd488 "b" b
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 
@@ -909,126 +1109,132 @@ fn test_git_fetch_some_of_many_bookmarks(subprocess: bool) {
     // First, change the target repo:
     let source_log = create_trunk2_and_rebase_bookmarks(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    ○  01d115196c39 descr_for_b b
-    │ ○  31c7d94b1f29 descr_for_a2 a2
+    ○  96c8ad25ad36 "b" b
+    │ ○  9ccd9f75fc0c "a2" a2
     ├─╯
-    │ ○  6df2d34cf0da descr_for_a1 a1
+    │ ○  527d2e46a87f "a1" a1
     ├─╯
-    @  2bb3ebd2bba3 descr_for_trunk2 trunk2
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    @  2f34a0e70741 "trunk2" trunk2
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
     // Change a bookmark in the source repo as well, so that it becomes conflicted.
-    test_env.jj_cmd_ok(
-        &target_jj_repo_path,
-        &["describe", "b", "-m=new_descr_for_b_to_create_conflict"],
-    );
+    test_env
+        .run_jj_in(
+            &target_jj_repo_path,
+            ["describe", "b", "-m=new_descr_for_b_to_create_conflict"],
+        )
+        .success();
 
     // Our repo before and after fetch of two bookmarks
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  6ebd41dc4f13 new_descr_for_b_to_create_conflict b*
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  e9445259b932 "new_descr_for_b_to_create_conflict" b*
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &target_jj_repo_path,
-        &["git", "fetch", "--branch", "b", "--branch", "a1"],
+        ["git", "fetch", "--branch", "b", "--branch", "a1"],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin [updated] tracked
     bookmark: b@origin  [updated] tracked
     Abandoned 1 commits that are no longer reachable.
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  01d115196c39 descr_for_b b?? b@origin
-    │ │ ○  6df2d34cf0da descr_for_a1 a1
+    @  230dd059e1b0 ""
+    │ ○  96c8ad25ad36 "b" b?? b@origin
+    │ │ ○  527d2e46a87f "a1" a1
     │ ├─╯
-    │ ○  2bb3ebd2bba3 descr_for_trunk2
-    │ │ ○  6ebd41dc4f13 new_descr_for_b_to_create_conflict b??
+    │ ○  2f34a0e70741 "trunk2"
+    │ │ ○  e9445259b932 "new_descr_for_b_to_create_conflict" b??
     │ ├─╯
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 
     // We left a2 where it was before, let's see how `jj bookmark list` sees this.
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r###"
-    a1: ypowunwp 6df2d34c descr_for_a1
-      @origin: ypowunwp 6df2d34c descr_for_a1
-    a2: qkvnknrk decaa396 descr_for_a2
-      @origin: qkvnknrk decaa396 descr_for_a2
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r"
+    a1: qptloxlm 527d2e46 a1
+      @origin: qptloxlm 527d2e46 a1
+    a2: qnxtrkvv e2a95b19 a2
+      @origin: qnxtrkvv e2a95b19 a2
     b (conflicted):
-      - vpupmnsl hidden c7d4bdcb descr_for_b
-      + vpupmnsl 6ebd41dc new_descr_for_b_to_create_conflict
-      + nxrpswuq 01d11519 descr_for_b
-      @origin (behind by 1 commits): nxrpswuq 01d11519 descr_for_b
-    "###);
+      - lnxrmsmo hidden 8cc4df9d b
+      + lnxrmsmo e9445259 new_descr_for_b_to_create_conflict
+      + rruvkzpm 96c8ad25 b
+      @origin (behind by 1 commits): rruvkzpm 96c8ad25 b
+    [EOF]
+    ");
     }
     // Now, let's fetch a2 and double-check that fetching a1 and b again doesn't do
     // anything.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &target_jj_repo_path,
-        &["git", "fetch", "--branch", "b", "--branch", "glob:a*"],
+        ["git", "fetch", "--branch", "b", "--branch", "glob:a*"],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a2@origin [updated] tracked
     Abandoned 1 commits that are no longer reachable.
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  31c7d94b1f29 descr_for_a2 a2
-    │ │ ○  01d115196c39 descr_for_b b?? b@origin
+    @  230dd059e1b0 ""
+    │ ○  9ccd9f75fc0c "a2" a2
+    │ │ ○  96c8ad25ad36 "b" b?? b@origin
     │ ├─╯
-    │ │ ○  6df2d34cf0da descr_for_a1 a1
+    │ │ ○  527d2e46a87f "a1" a1
     │ ├─╯
-    │ ○  2bb3ebd2bba3 descr_for_trunk2
-    │ │ ○  6ebd41dc4f13 new_descr_for_b_to_create_conflict b??
+    │ ○  2f34a0e70741 "trunk2"
+    │ │ ○  e9445259b932 "new_descr_for_b_to_create_conflict" b??
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r###"
-    a1: ypowunwp 6df2d34c descr_for_a1
-      @origin: ypowunwp 6df2d34c descr_for_a1
-    a2: qrmzolkr 31c7d94b descr_for_a2
-      @origin: qrmzolkr 31c7d94b descr_for_a2
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &target_jj_repo_path), @r"
+    a1: qptloxlm 527d2e46 a1
+      @origin: qptloxlm 527d2e46 a1
+    a2: ltuqxttq 9ccd9f75 a2
+      @origin: ltuqxttq 9ccd9f75 a2
     b (conflicted):
-      - vpupmnsl hidden c7d4bdcb descr_for_b
-      + vpupmnsl 6ebd41dc new_descr_for_b_to_create_conflict
-      + nxrpswuq 01d11519 descr_for_b
-      @origin (behind by 1 commits): nxrpswuq 01d11519 descr_for_b
-    "###);
+      - lnxrmsmo hidden 8cc4df9d b
+      + lnxrmsmo e9445259 new_descr_for_b_to_create_conflict
+      + rruvkzpm 96c8ad25 b
+      @origin (behind by 1 commits): rruvkzpm 96c8ad25 b
+    [EOF]
+    ");
     }
 }
 
@@ -1040,7 +1246,7 @@ fn test_git_fetch_bookmarks_some_missing(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "origin");
     add_git_remote(&test_env, &repo_path, "rem1");
@@ -1048,102 +1254,114 @@ fn test_git_fetch_bookmarks_some_missing(subprocess: bool) {
     add_git_remote(&test_env, &repo_path, "rem3");
 
     // single missing bookmark, implicit remotes (@origin)
-    let (_stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--branch", "noexist"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--branch", "noexist"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: No branch matching `noexist` found on any specified/configured remote
     Nothing changed.
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @"");
     }
 
     // multiple missing bookmarks, implicit remotes (@origin)
-    let (_stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "git", "fetch", "--branch", "noexist1", "--branch", "noexist2",
         ],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: No branch matching `noexist1` found on any specified/configured remote
     Warning: No branch matching `noexist2` found on any specified/configured remote
     Nothing changed.
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @"");
     }
 
     // single existing bookmark, implicit remotes (@origin)
-    let (_stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--branch", "origin"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--branch", "origin"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: origin@origin [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    origin: oputwtnw ffecd2d6 message
-      @origin: oputwtnw ffecd2d6 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    origin: qmyrypzk ab8b299e message
+      @origin: qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 
     // multiple existing bookmark, explicit remotes, each bookmark is only in one
     // remote.
-    let (_stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "git", "fetch", "--branch", "rem1", "--branch", "rem2", "--branch", "rem3", "--remote",
             "rem1", "--remote", "rem2", "--remote", "rem3",
         ],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: rem1@rem1 [new] tracked
     bookmark: rem2@rem2 [new] tracked
     bookmark: rem3@rem3 [new] tracked
+    [EOF]
     ");
     }
     insta::allow_duplicates! {
-     insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
-    origin: oputwtnw ffecd2d6 message
-      @origin: oputwtnw ffecd2d6 message
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    rem2: yszkquru 2497a8a0 message
-      @rem2: yszkquru 2497a8a0 message
-    rem3: lvsrtwwm 4ffdff2b message
-      @rem3: lvsrtwwm 4ffdff2b message
-    ");
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    origin: qmyrypzk ab8b299e message
+      @origin: qmyrypzk ab8b299e message
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    rem2: pzqqpnpo 44c57802 message
+      @rem2: pzqqpnpo 44c57802 message
+    rem3: wrzwlmys 45a3faef message
+      @rem3: wrzwlmys 45a3faef message
+    [EOF]
+    ")
     }
 
     // multiple bookmarks, one exists, one doesn't
-    let (_stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "git", "fetch", "--branch", "rem1", "--branch", "notexist", "--remote", "rem1",
         ],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: No branch matching `notexist` found on any specified/configured remote
     Nothing changed.
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
-    origin: oputwtnw ffecd2d6 message
-      @origin: oputwtnw ffecd2d6 message
-    rem1: qxosxrvv 6a211027 message
-      @rem1: qxosxrvv 6a211027 message
-    rem2: yszkquru 2497a8a0 message
-      @rem2: yszkquru 2497a8a0 message
-    rem3: lvsrtwwm 4ffdff2b message
-      @rem3: lvsrtwwm 4ffdff2b message
+    origin: qmyrypzk ab8b299e message
+      @origin: qmyrypzk ab8b299e message
+    rem1: ppspxspk 4acd0343 message
+      @rem1: ppspxspk 4acd0343 message
+    rem2: pzqqpnpo 44c57802 message
+      @rem2: pzqqpnpo 44c57802 message
+    rem3: wrzwlmys 45a3faef message
+      @rem3: wrzwlmys 45a3faef message
+    [EOF]
     ");
     }
 }
@@ -1151,27 +1369,28 @@ fn test_git_fetch_bookmarks_some_missing(subprocess: bool) {
 #[test]
 fn test_git_fetch_bookmarks_missing_with_subprocess_localized_message() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "origin");
 
     // "fatal: couldn't find remote ref %s" shouldn't be localized.
-    let assert = test_env
-        .jj_cmd(&repo_path, &["git", "fetch", "--branch=unknown"])
-        // Initialize locale as "en_US" which is the most common.
-        .env("LC_ALL", "en_US.UTF-8")
-        // Set some other locale variables for testing.
-        .env("LC_MESSAGES", "en_US.UTF-8")
-        .env("LANG", "en_US.UTF-8")
-        // GNU gettext prioritizes LANGUAGE if translation is enabled. It works
-        // no matter if system locale exists or not.
-        .env("LANGUAGE", "zh_TW")
-        .assert()
-        .success();
-    let stderr = test_env.normalize_output(&get_stderr_string(&assert));
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .args(["git", "fetch", "--branch=unknown"])
+            // Initialize locale as "en_US" which is the most common.
+            .env("LC_ALL", "en_US.UTF-8")
+            // Set some other locale variables for testing.
+            .env("LC_MESSAGES", "en_US.UTF-8")
+            .env("LANG", "en_US.UTF-8")
+            // GNU gettext prioritizes LANGUAGE if translation is enabled. It works
+            // no matter if system locale exists or not.
+            .env("LANGUAGE", "zh_TW")
+    });
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Warning: No branch matching `unknown` found on any specified/configured remote
     Nothing changed.
+    [EOF]
     ");
 }
 
@@ -1186,90 +1405,94 @@ fn test_git_fetch_undo(subprocess: bool) {
     }
     test_env.add_config("git.auto-local-bookmark = true");
     let source_git_repo_path = test_env.env_root().join("source");
-    let _git_repo = git2::Repository::init(source_git_repo_path.clone()).unwrap();
+    git::init(source_git_repo_path.clone());
 
     // Clone an empty repo. The target repo is a normal `jj` repo, *not* colocated
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "source", "target"]);
+    let output = test_env.run_jj_in(".", ["git", "clone", "source", "target"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Fetching into new repo in "$TEST_ENV/target"
     Nothing changed.
-    "###);
+    [EOF]
+    "#);
     }
     let target_jj_repo_path = test_env.env_root().join("target");
 
     let source_log =
         create_colocated_repo_and_bookmarks_from_trunk1(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    @  c7d4bdcbc215 descr_for_b b
-    │ ○  decaa3966c83 descr_for_a2 a2
+    @  8cc4df9dd488 "b" b
+    │ ○  e2a95b19b745 "a2" a2
     ├─╯
-    │ ○  359a9a02457d descr_for_a1 a1
+    │ ○  dd42071fe1ad "a1" a1
     ├─╯
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
 
     // Fetch 2 bookmarks
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &target_jj_repo_path,
-        &["git", "fetch", "--branch", "b", "--branch", "a1"],
+        ["git", "fetch", "--branch", "b", "--branch", "a1"],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin [new] tracked
     bookmark: b@origin  [new] tracked
-    "###);
+    [EOF]
+    ");
+    }
+    insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
-    let (stdout, stderr) = test_env.jj_cmd_ok(&target_jj_repo_path, &["undo"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["undo"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Undid operation: 4bd67fb242bc (2001-02-03 08:05:18) fetch from git remote(s) origin
+    [EOF]
+    ");
     }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r#"
-    Undid operation: eb2029853b02 (2001-02-03 08:05:18) fetch from git remote(s) origin
-    "#);
     // The undo works as expected
-    insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r###"
-    @  230dd059e1b0
-    ◆  000000000000
-    "###);
+    insta::allow_duplicates! {
+    insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
+    @  230dd059e1b0 ""
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
     // Now try to fetch just one bookmark
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch", "--branch", "b"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch", "--branch", "b"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    bookmark: b@origin [new] tracked
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
-    bookmark: b@origin [new] tracked
-    "###);
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ ○  ff36dc55760e descr_for_trunk1
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 }
@@ -1285,35 +1508,34 @@ fn test_fetch_undo_what(subprocess: bool) {
     }
     test_env.add_config("git.auto-local-bookmark = true");
     let source_git_repo_path = test_env.env_root().join("source");
-    let _git_repo = git2::Repository::init(source_git_repo_path.clone()).unwrap();
+    git::init(source_git_repo_path.clone());
 
     // Clone an empty repo. The target repo is a normal `jj` repo, *not* colocated
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "source", "target"]);
+    let output = test_env.run_jj_in(".", ["git", "clone", "source", "target"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Fetching into new repo in "$TEST_ENV/target"
     Nothing changed.
-    "###);
+    [EOF]
+    "#);
     }
     let repo_path = test_env.env_root().join("target");
 
     let source_log =
         create_colocated_repo_and_bookmarks_from_trunk1(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    @  c7d4bdcbc215 descr_for_b b
-    │ ○  decaa3966c83 descr_for_a2 a2
+    @  8cc4df9dd488 "b" b
+    │ ○  e2a95b19b745 "a2" a2
     ├─╯
-    │ ○  359a9a02457d descr_for_a1 a1
+    │ ○  dd42071fe1ad "a1" a1
     ├─╯
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
 
     // Initial state we will try to return to after `op restore`. There are no
@@ -1324,67 +1546,71 @@ fn test_fetch_undo_what(subprocess: bool) {
     let base_operation_id = test_env.current_operation_id(&repo_path);
 
     // Fetch a bookmark
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--branch", "b"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--branch", "b"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: b@origin [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ ○  ff36dc55760e descr_for_trunk1
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    b: vpupmnsl c7d4bdcb descr_for_b
-      @origin: vpupmnsl c7d4bdcb descr_for_b
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    b: lnxrmsmo 8cc4df9d b
+      @origin: lnxrmsmo 8cc4df9d b
+    [EOF]
+    ");
     }
 
     // We can undo the change in the repo without moving the remote-tracking
     // bookmark
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["op", "restore", "--what", "repo", &base_operation_id],
+        ["op", "restore", "--what", "repo", &base_operation_id],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r#"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Restored to operation: eac759b9ab75 (2001-02-03 08:05:07) add workspace 'default'
-    "#);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     b (deleted)
-      @origin: vpupmnsl hidden c7d4bdcb descr_for_b
-    "###);
+      @origin: lnxrmsmo hidden 8cc4df9d b
+    [EOF]
+    ");
     }
 
     // Now, let's demo restoring just the remote-tracking bookmark. First, let's
     // change our local repo state...
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "c", "newbookmark"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "c", "-r@", "newbookmark"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     b (deleted)
-      @origin: vpupmnsl hidden c7d4bdcb descr_for_b
+      @origin: lnxrmsmo hidden 8cc4df9d b
     newbookmark: qpvuntsm 230dd059 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     }
     // Restoring just the remote-tracking state will not affect `newbookmark`, but
     // will eliminate `b@origin`.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "op",
             "restore",
             "--what",
@@ -1393,17 +1619,17 @@ fn test_fetch_undo_what(subprocess: bool) {
         ],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r#"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Restored to operation: eac759b9ab75 (2001-02-03 08:05:07) add workspace 'default'
-    "#);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     newbookmark: qpvuntsm 230dd059 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     }
 }
 
@@ -1415,55 +1641,64 @@ fn test_git_fetch_remove_fetch(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "origin");
 
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "origin"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "origin"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     origin: qpvuntsm 230dd059 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     }
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     origin (conflicted):
       + qpvuntsm 230dd059 (empty) (no description set)
-      + oputwtnw ffecd2d6 message
-      @origin (behind by 1 commits): oputwtnw ffecd2d6 message
-    "###);
+      + qmyrypzk ab8b299e message
+      @origin (behind by 1 commits): qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "remote", "remove", "origin"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "remote", "remove", "origin"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     origin (conflicted):
       + qpvuntsm 230dd059 (empty) (no description set)
-      + oputwtnw ffecd2d6 message
-    "###);
+      + qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "remote", "add", "origin", "../origin"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "remote", "add", "origin", "../origin"])
+        .success();
 
     // Check that origin@origin is properly recreated
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: origin@origin [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     origin (conflicted):
       + qpvuntsm 230dd059 (empty) (no description set)
-      + oputwtnw ffecd2d6 message
-      @origin (behind by 1 commits): oputwtnw ffecd2d6 message
-    "###);
+      + qmyrypzk ab8b299e message
+      @origin (behind by 1 commits): qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 }
 
@@ -1475,50 +1710,55 @@ fn test_git_fetch_rename_fetch(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
     add_git_remote(&test_env, &repo_path, "origin");
 
-    test_env.jj_cmd_ok(&repo_path, &["bookmark", "create", "origin"]);
+    test_env
+        .run_jj_in(&repo_path, ["bookmark", "create", "-r@", "origin"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     origin: qpvuntsm 230dd059 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     }
 
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch"]);
+    test_env.run_jj_in(&repo_path, ["git", "fetch"]).success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     origin (conflicted):
       + qpvuntsm 230dd059 (empty) (no description set)
-      + oputwtnw ffecd2d6 message
-      @origin (behind by 1 commits): oputwtnw ffecd2d6 message
-    "###);
+      + qmyrypzk ab8b299e message
+      @origin (behind by 1 commits): qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["git", "remote", "rename", "origin", "upstream"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["git", "remote", "rename", "origin", "upstream"],
+        )
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
     origin (conflicted):
       + qpvuntsm 230dd059 (empty) (no description set)
-      + oputwtnw ffecd2d6 message
-      @upstream (behind by 1 commits): oputwtnw ffecd2d6 message
-    "###);
+      + qmyrypzk ab8b299e message
+      @upstream (behind by 1 commits): qmyrypzk ab8b299e message
+    [EOF]
+    ");
     }
 
     // Check that jj indicates that nothing has changed
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--remote", "upstream"]);
+    let output = test_env.run_jj_in(&repo_path, ["git", "fetch", "--remote", "upstream"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
     }
 }
 
@@ -1531,111 +1771,115 @@ fn test_git_fetch_removed_bookmark(subprocess: bool) {
     }
     test_env.add_config("git.auto-local-bookmark = true");
     let source_git_repo_path = test_env.env_root().join("source");
-    let _git_repo = git2::Repository::init(source_git_repo_path.clone()).unwrap();
+    git::init(source_git_repo_path.clone());
 
     // Clone an empty repo. The target repo is a normal `jj` repo, *not* colocated
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "source", "target"]);
+    let output = test_env.run_jj_in(".", ["git", "clone", "source", "target"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Fetching into new repo in "$TEST_ENV/target"
     Nothing changed.
-    "###);
+    [EOF]
+    "#);
     }
     let target_jj_repo_path = test_env.env_root().join("target");
 
     let source_log =
         create_colocated_repo_and_bookmarks_from_trunk1(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    @  c7d4bdcbc215 descr_for_b b
-    │ ○  decaa3966c83 descr_for_a2 a2
+    @  8cc4df9dd488 "b" b
+    │ ○  e2a95b19b745 "a2" a2
     ├─╯
-    │ ○  359a9a02457d descr_for_a1 a1
+    │ ○  dd42071fe1ad "a1" a1
     ├─╯
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
 
     // Fetch all bookmarks
-    let (stdout, stderr) = test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin     [new] tracked
     bookmark: a2@origin     [new] tracked
     bookmark: b@origin      [new] tracked
     bookmark: trunk1@origin [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1 trunk1
+    │ ○  9929b494c411 "trunk1" trunk1
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 
     // Remove a2 bookmark in origin
-    test_env.jj_cmd_ok(&source_git_repo_path, &["bookmark", "forget", "a2"]);
+    test_env
+        .run_jj_in(
+            &source_git_repo_path,
+            ["bookmark", "forget", "--include-remotes", "a2"],
+        )
+        .success();
 
     // Fetch bookmark a1 from origin and check that a2 is still there
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch", "--branch", "a1"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch", "--branch", "a1"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1 trunk1
+    │ ○  9929b494c411 "trunk1" trunk1
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 
     // Fetch bookmarks a2 from origin, and check that it has been removed locally
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch", "--branch", "a2"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch", "--branch", "a2"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a2@origin [deleted] untracked
     Abandoned 1 commits that are no longer reachable.
-    "###);
+    [EOF]
+    ");
+    }
+    insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1 trunk1
+    │ ○  9929b494c411 "trunk1" trunk1
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 }
@@ -1649,96 +1893,100 @@ fn test_git_fetch_removed_parent_bookmark(subprocess: bool) {
     }
     test_env.add_config("git.auto-local-bookmark = true");
     let source_git_repo_path = test_env.env_root().join("source");
-    let _git_repo = git2::Repository::init(source_git_repo_path.clone()).unwrap();
+    git::init(source_git_repo_path.clone());
 
     // Clone an empty repo. The target repo is a normal `jj` repo, *not* colocated
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(test_env.env_root(), &["git", "clone", "source", "target"]);
+    let output = test_env.run_jj_in(".", ["git", "clone", "source", "target"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Fetching into new repo in "$TEST_ENV/target"
     Nothing changed.
-    "###);
+    [EOF]
+    "#);
     }
     let target_jj_repo_path = test_env.env_root().join("target");
 
     let source_log =
         create_colocated_repo_and_bookmarks_from_trunk1(&test_env, &source_git_repo_path);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(source_log, @r###"
+    insta::assert_snapshot!(source_log, @r#"
        ===== Source git repo contents =====
-    @  c7d4bdcbc215 descr_for_b b
-    │ ○  decaa3966c83 descr_for_a2 a2
+    @  8cc4df9dd488 "b" b
+    │ ○  e2a95b19b745 "a2" a2
     ├─╯
-    │ ○  359a9a02457d descr_for_a1 a1
+    │ ○  dd42071fe1ad "a1" a1
     ├─╯
-    ○  ff36dc55760e descr_for_trunk1 trunk1
-    ◆  000000000000
-    "###);
+    ○  9929b494c411 "trunk1" trunk1
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
 
     // Fetch all bookmarks
-    let (stdout, stderr) = test_env.jj_cmd_ok(&target_jj_repo_path, &["git", "fetch"]);
+    let output = test_env.run_jj_in(&target_jj_repo_path, ["git", "fetch"]);
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin     [new] tracked
     bookmark: a2@origin     [new] tracked
     bookmark: b@origin      [new] tracked
     bookmark: trunk1@origin [new] tracked
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ │ ○  359a9a02457d descr_for_a1 a1
+    │ │ ○  dd42071fe1ad "a1" a1
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1 trunk1
+    │ ○  9929b494c411 "trunk1" trunk1
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 
     // Remove all bookmarks in origin.
-    test_env.jj_cmd_ok(&source_git_repo_path, &["bookmark", "forget", "glob:*"]);
+    test_env
+        .run_jj_in(
+            &source_git_repo_path,
+            ["bookmark", "forget", "--include-remotes", "glob:*"],
+        )
+        .success();
 
     // Fetch bookmarks master, trunk1 and a1 from origin and check that only those
     // bookmarks have been removed and that others were not rebased because of
     // abandoned commits.
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &target_jj_repo_path,
-        &[
+        [
             "git", "fetch", "--branch", "master", "--branch", "trunk1", "--branch", "a1",
         ],
     );
     insta::allow_duplicates! {
-    insta::assert_snapshot!(stdout, @"");
-    }
-    insta::allow_duplicates! {
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     bookmark: a1@origin     [deleted] untracked
     bookmark: trunk1@origin [deleted] untracked
     Abandoned 1 commits that are no longer reachable.
     Warning: No branch matching `master` found on any specified/configured remote
-    "###);
+    [EOF]
+    ");
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &target_jj_repo_path), @r#"
-    @  230dd059e1b0
-    │ ○  c7d4bdcbc215 descr_for_b b
-    │ │ ○  decaa3966c83 descr_for_a2 a2
+    @  230dd059e1b0 ""
+    │ ○  8cc4df9dd488 "b" b
+    │ │ ○  e2a95b19b745 "a2" a2
     │ ├─╯
-    │ ○  ff36dc55760e descr_for_trunk1
+    │ ○  9929b494c411 "trunk1"
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
 }
@@ -1750,74 +1998,71 @@ fn test_git_fetch_remote_only_bookmark(subprocess: bool) {
     if !subprocess {
         test_env.add_config("git.subprocess = false");
     }
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Create non-empty git repo to add as a remote
     let git_repo_path = test_env.env_root().join("git-repo");
-    let git_repo = git2::Repository::init(git_repo_path).unwrap();
-    let signature = git2_signature();
-    let mut tree_builder = git_repo.treebuilder(None).unwrap();
-    let file_oid = git_repo.blob(b"content").unwrap();
-    tree_builder
-        .insert("file", file_oid, git2::FileMode::Blob.into())
-        .unwrap();
-    let tree_oid = tree_builder.write().unwrap();
-    let tree = git_repo.find_tree(tree_oid).unwrap();
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["git", "remote", "add", "origin", "../git-repo"],
-    );
-    // Create a commit and a bookmark in the git repo
-    git_repo
-        .commit(
-            Some("refs/heads/feature1"),
-            &signature,
-            &signature,
-            "message",
-            &tree,
-            &[],
+    let git_repo = git::init(git_repo_path);
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["git", "remote", "add", "origin", "../git-repo"],
         )
-        .unwrap();
+        .success();
+
+    // Create a commit and a bookmark in the git repo
+    let commit_result = git::add_commit(
+        &git_repo,
+        "refs/heads/feature1",
+        "file",
+        b"content",
+        "message",
+        &[],
+    );
 
     // Fetch using git.auto_local_bookmark = true
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--remote=origin"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "fetch", "--remote=origin"])
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    feature1: mzyxwzks 9f01a0e0 message
-      @origin: mzyxwzks 9f01a0e0 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    feature1: qomsplrm ebeb70d8 message
+      @origin: qomsplrm ebeb70d8 message
+    [EOF]
+    ");
     }
 
-    git_repo
-        .commit(
-            Some("refs/heads/feature2"),
-            &signature,
-            &signature,
-            "message",
-            &tree,
-            &[],
-        )
-        .unwrap();
+    git::write_commit(
+        &git_repo,
+        "refs/heads/feature2",
+        commit_result.tree_id,
+        "message",
+        &[],
+    );
 
     // Fetch using git.auto_local_bookmark = false
     test_env.add_config("git.auto-local-bookmark = false");
-    test_env.jj_cmd_ok(&repo_path, &["git", "fetch", "--remote=origin"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "fetch", "--remote=origin"])
+        .success();
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r#"
-    @  230dd059e1b0
-    │ ◆  9f01a0e04879 message feature1 feature2@origin
+    @  230dd059e1b0 ""
+    │ ◆  ebeb70d8c5f9 "message" feature1 feature2@origin
     ├─╯
-    ◆  000000000000
+    ◆  000000000000 ""
+    [EOF]
     "#);
     }
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r###"
-    feature1: mzyxwzks 9f01a0e0 message
-      @origin: mzyxwzks 9f01a0e0 message
-    feature2@origin: mzyxwzks 9f01a0e0 message
-    "###);
+    insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
+    feature1: qomsplrm ebeb70d8 message
+      @origin: qomsplrm ebeb70d8 message
+    feature2@origin: qomsplrm ebeb70d8 message
+    [EOF]
+    ");
     }
 }
 
@@ -1829,102 +2074,110 @@ fn test_git_fetch_preserve_commits_across_repos(subprocess: bool) {
         test_env.add_config("git.subprocess = false");
     }
     test_env.add_config("git.auto-local-bookmark = true");
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     let upstream_repo = add_git_remote(&test_env, &repo_path, "upstream");
 
     let fork_path = test_env.env_root().join("fork");
     let fork_repo = clone_git_remote_into(&test_env, "upstream", "fork");
-    test_env.jj_cmd_ok(&repo_path, &["git", "remote", "add", "fork", "../fork"]);
+    test_env
+        .run_jj_in(&repo_path, ["git", "remote", "add", "fork", "../fork"])
+        .success();
 
     // add commit to fork remote in another branch
     add_commit_to_branch(&fork_repo, "feature");
 
     // fetch remote bookmarks
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["git", "fetch", "--remote=fork", "--remote=upstream"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["git", "fetch", "--remote=fork", "--remote=upstream"],
+        )
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r"
-    @  230dd059e1b0
-    │ ○  e386ce0e4690 message feature
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r#"
+    @  230dd059e1b0 ""
+    │ ○  bcd7cd779791 "message" upstream
     ├─╯
-    │ ○  05ae9cbbe5c7 message upstream
+    │ ○  16ec9ef2877a "message" feature
     ├─╯
-    ◆  000000000000
-    ");
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
-    feature: nwtolyry e386ce0e message
-      @fork: nwtolyry e386ce0e message
-    upstream: tzqqlonq 05ae9cbb message
-      @fork: tzqqlonq 05ae9cbb message
-      @upstream: tzqqlonq 05ae9cbb message
+    feature: srwrtuky 16ec9ef2 message
+      @fork: srwrtuky 16ec9ef2 message
+    upstream: zkvzklqn bcd7cd77 message
+      @fork: zkvzklqn bcd7cd77 message
+      @upstream: zkvzklqn bcd7cd77 message
+    [EOF]
     ");
     }
 
     // merge fork/feature into the upstream/upstream
-    let mut fork_remote = upstream_repo
-        .remote("fork", fork_path.to_str().unwrap())
-        .unwrap();
-    fork_remote.fetch(&["feature"], None, None).unwrap();
-    let merge_base = upstream_repo
-        .find_branch("upstream", git2::BranchType::Local)
+    git::add_remote(upstream_repo.git_dir(), "fork", fork_path.to_str().unwrap());
+    git::fetch(upstream_repo.git_dir(), "fork");
+
+    let base_id = upstream_repo
+        .find_reference("refs/heads/upstream")
         .unwrap()
-        .into_reference()
         .peel_to_commit()
-        .unwrap();
-    let merge_target = upstream_repo
-        .find_branch("fork/feature", git2::BranchType::Remote)
         .unwrap()
-        .into_reference()
+        .id()
+        .detach();
+
+    let fork_id = upstream_repo
+        .find_reference("refs/remotes/fork/feature")
+        .unwrap()
         .peel_to_commit()
-        .unwrap();
-    let merge_oid = upstream_repo.index().unwrap().write_tree().unwrap();
-    let merge_tree = upstream_repo.find_tree(merge_oid).unwrap();
-    let signature = git2_signature();
-    upstream_repo
-        .commit(
-            Some("refs/heads/upstream"),
-            &signature,
-            &signature,
-            "merge",
-            &merge_tree,
-            &[&merge_base, &merge_target],
-        )
-        .unwrap();
+        .unwrap()
+        .id()
+        .detach();
+
+    git::write_commit(
+        &upstream_repo,
+        "refs/heads/upstream",
+        upstream_repo.empty_tree().id().detach(),
+        "merge",
+        &[base_id, fork_id],
+    );
 
     // remove branch on the fork
-    let mut branch = fork_repo
-        .find_branch("feature", git2::BranchType::Local)
+    fork_repo
+        .find_reference("refs/heads/feature")
+        .unwrap()
+        .delete()
         .unwrap();
-    branch.delete().unwrap();
 
     // fetch again on the jj repo, first looking at fork and then at upstream
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &["git", "fetch", "--remote=fork", "--remote=upstream"],
-    );
+    test_env
+        .run_jj_in(
+            &repo_path,
+            ["git", "fetch", "--remote=fork", "--remote=upstream"],
+        )
+        .success();
     insta::allow_duplicates! {
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r"
-    @  230dd059e1b0
-    │ ○    407a9966fc22 merge upstream*
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r#"
+    @  230dd059e1b0 ""
+    │ ○    f3e9250bd003 "merge" upstream*
     │ ├─╮
-    │ │ ○  e386ce0e4690 message
+    │ │ ○  16ec9ef2877a "message"
     ├───╯
-    │ ○  05ae9cbbe5c7 message upstream@fork
+    │ ○  bcd7cd779791 "message" upstream@fork
     ├─╯
-    ◆  000000000000
-    ");
+    ◆  000000000000 ""
+    [EOF]
+    "#);
     }
     insta::allow_duplicates! {
     insta::assert_snapshot!(get_bookmark_output(&test_env, &repo_path), @r"
-    upstream: qzsuxvvx 407a9966 merge
-      @fork (behind by 2 commits): tzqqlonq 05ae9cbb message
-      @upstream: qzsuxvvx 407a9966 merge
+    upstream: trrkvuqr f3e9250b merge
+      @fork (behind by 2 commits): zkvzklqn bcd7cd77 message
+      @upstream: trrkvuqr f3e9250b merge
+    [EOF]
     ");
     }
 }

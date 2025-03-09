@@ -491,12 +491,12 @@ impl RefStatus {
         repo: &dyn Repo,
     ) -> Self {
         let (ref_name, ref_kind, tracking_status) = match ref_name {
-            RefName::RemoteBranch { branch, remote } => (
-                format!("{branch}@{remote}"),
+            RefName::RemoteBranch(symbol) => (
+                format!("{symbol}"),
                 RefKind::Branch,
                 if repo
                     .view()
-                    .get_remote_bookmark(branch, remote)
+                    .get_remote_bookmark(symbol.as_ref())
                     .is_tracking()
                 {
                     TrackingStatus::Tracked
@@ -702,7 +702,7 @@ mod tests {
         };
         // First output is after the initial delay
         assert_snapshot!(update(crate::progress::INITIAL_DELAY - Duration::from_millis(1), 0.1), @"");
-        assert_snapshot!(update(Duration::from_millis(1), 0.10), @"[?25l\r 10% [█▊                ][K");
+        assert_snapshot!(update(Duration::from_millis(1), 0.10), @"\u{1b}[?25l\r 10% [█▊                ]\u{1b}[K");
         // No updates for the next 30 milliseconds
         assert_snapshot!(update(Duration::from_millis(10), 0.11), @"");
         assert_snapshot!(update(Duration::from_millis(10), 0.12), @"");

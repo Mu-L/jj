@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use clap_complete::ArgValueCandidates;
 use itertools::Itertools;
@@ -36,9 +37,9 @@ use crate::ui::Ui;
 /// revisions are preceded by a "-" and new target revisions are preceded by a
 /// "+".
 ///
-/// See the [bookmark documentation] for more information.
+/// See [`jj help -k bookmarks`] for more information.
 ///
-/// [bookmark documentation]:
+/// [`jj help -k bookmarks`]:
 ///     https://jj-vcs.github.io/jj/latest/bookmarks
 #[derive(clap::Args, Clone, Debug)]
 pub struct BookmarkListArgs {
@@ -95,14 +96,15 @@ pub struct BookmarkListArgs {
 
     /// Render each bookmark using the given template
     ///
-    /// All 0-argument methods of the [`RefName` type] are available as
-    /// keywords in the [template expression].
-    ///
-    /// [template expression]:
-    ///     https://jj-vcs.github.io/jj/latest/templates/
+    /// All 0-argument methods of the [`RefName` type] are available as keywords
+    /// in the template expression. See [`jj help -k templates`] for more
+    /// information.
     ///
     /// [`RefName` type]:
     ///     https://jj-vcs.github.io/jj/latest/templates/#refname-type
+    ///
+    /// [`jj help -k templates`]:
+    ///     https://jj-vcs.github.io/jj/latest/templates/
     #[arg(long, short = 'T', add = ArgValueCandidates::new(complete::template_aliases))]
     template: Option<String>,
 }
@@ -160,15 +162,11 @@ pub fn cmd_bookmark_list(
             .labeled("bookmark_list")
     };
 
-    ui.request_pager();
-    let mut formatter = ui.stdout_formatter();
-
-    let mut found_deleted_local_bookmark = false;
-    let mut found_deleted_tracking_local_bookmark = false;
+    let mut bookmark_list_items: Vec<RefListItem> = Vec::new();
     let bookmarks_to_list = view.bookmarks().filter(|(name, target)| {
         bookmark_names_to_list
             .as_ref()
-            .map_or(true, |bookmark_names| bookmark_names.contains(name))
+            .is_none_or(|bookmark_names| bookmark_names.contains(name))
             && (!args.conflicted || target.local_target.has_conflict())
     });
     for (name, bookmark_target) in bookmarks_to_list {
@@ -178,7 +176,7 @@ pub fn cmd_bookmark_list(
             .iter()
             .copied()
             .filter(|&(remote_name, _)| {
-                args.remotes.as_ref().map_or(true, |patterns| {
+                args.remotes.as_ref().is_none_or(|patterns| {
                     patterns.iter().any(|pattern| pattern.matches(remote_name))
                 })
             })
@@ -192,54 +190,78 @@ pub fn cmd_bookmark_list(
 
         let include_local_only = !args.tracked && args.remotes.is_none();
         if include_local_only && local_target.is_present() || !tracking_remote_refs.is_empty() {
-            let ref_name = RefName::local(
+            let primary = RefName::local(
                 name,
                 local_target.clone(),
                 remote_refs.iter().map(|&(_, remote_ref)| remote_ref),
             );
-            template.format(&ref_name, formatter.as_mut())?;
-        }
-
-        for &(remote, remote_ref) in &tracking_remote_refs {
-            let ref_name = RefName::remote(name, remote, remote_ref.clone(), local_target);
-            template.format(&ref_name, formatter.as_mut())?;
-        }
-
-        if local_target.is_absent() && !tracking_remote_refs.is_empty() {
-            found_deleted_local_bookmark = true;
-            found_deleted_tracking_local_bookmark |= tracking_remote_refs
+            let tracked = tracking_remote_refs
                 .iter()
-                .any(|&(remote, _)| !jj_lib::git::is_special_git_remote(remote));
+                .map(|&(remote, remote_ref)| {
+                    RefName::remote(name, remote, remote_ref.clone(), local_target)
+                })
+                .collect();
+            bookmark_list_items.push(RefListItem { primary, tracked });
         }
 
         if !args.tracked && (args.all_remotes || args.remotes.is_some()) {
-            for &(remote, remote_ref) in &untracked_remote_refs {
-                let ref_name = RefName::remote_only(name, remote, remote_ref.target.clone());
-                template.format(&ref_name, formatter.as_mut())?;
-            }
+            bookmark_list_items.extend(untracked_remote_refs.iter().map(
+                |&(remote, remote_ref)| RefListItem {
+                    primary: RefName::remote_only(name, remote, remote_ref.target.clone()),
+                    tracked: vec![],
+                },
+            ));
         }
     }
 
+    ui.request_pager();
+    let mut formatter = ui.stdout_formatter();
+    bookmark_list_items
+        .iter()
+        .flat_map(|item| itertools::chain([&item.primary], &item.tracked))
+        .try_for_each(|ref_name| template.format(ref_name, formatter.as_mut()))?;
     drop(formatter);
 
     #[cfg(feature = "git")]
     if jj_lib::git::get_git_backend(repo.store()).is_ok() {
         // Print only one of these hints. It's not important to mention unexported
         // bookmarks, but user might wonder why deleted bookmarks are still listed.
-        if found_deleted_tracking_local_bookmark {
-            writeln!(
-                ui.hint_default(),
-                "Bookmarks marked as deleted will be *deleted permanently* on the remote on the \
-                 next `jj git push`. Use `jj bookmark forget` to prevent this."
-            )?;
-        } else if found_deleted_local_bookmark {
-            writeln!(
-                ui.hint_default(),
-                "Bookmarks marked as deleted will be deleted from the underlying Git repo on the \
-                 next `jj git export`."
-            )?;
+        let deleted_tracking = bookmark_list_items
+            .iter()
+            .filter(|item| item.primary.is_local() && item.primary.is_absent())
+            .map(|item| {
+                item.tracked.iter().any(|r| {
+                    let remote = r.remote_name().expect("tracked ref should be remote");
+                    !jj_lib::git::is_special_git_remote(remote)
+                })
+            })
+            .max();
+        match deleted_tracking {
+            Some(true) => {
+                writeln!(
+                    ui.hint_default(),
+                    "Bookmarks marked as deleted will be *deleted permanently* on the remote on \
+                     the next `jj git push`. Use `jj bookmark forget` to prevent this."
+                )?;
+            }
+            Some(false) => {
+                writeln!(
+                    ui.hint_default(),
+                    "Bookmarks marked as deleted will be deleted from the underlying Git repo on \
+                     the next `jj git export`."
+                )?;
+            }
+            None => {}
         }
     }
 
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct RefListItem {
+    /// Local bookmark or untracked remote bookmark.
+    primary: Rc<RefName>,
+    /// Remote bookmarks tracked by the primary (or local) bookmark.
+    tracked: Vec<Rc<RefName>>,
 }

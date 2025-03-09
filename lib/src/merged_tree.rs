@@ -182,7 +182,9 @@ impl MergedTree {
     /// all sides are trees, so tree/file conflicts will be reported as a single
     /// conflict, not one for each path in the tree.
     // TODO: Restrict this by a matcher (or add a separate method for that).
-    pub fn conflicts(&self) -> impl Iterator<Item = (RepoPathBuf, BackendResult<MergedTreeValue>)> {
+    pub fn conflicts(
+        &self,
+    ) -> impl Iterator<Item = (RepoPathBuf, BackendResult<MergedTreeValue>)> + use<> {
         ConflictIterator::new(self)
     }
 
@@ -856,7 +858,7 @@ pub struct TreeDiffStreamImpl<'matcher> {
     /// a corresponding entry in `pending_trees`.
     items: BTreeMap<DiffStreamKey, BackendResult<(MergedTreeValue, MergedTreeValue)>>,
     // TODO: Is it better to combine this and `items` into a single map?
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     pending_trees: VecDeque<(
         RepoPathBuf,
         BoxFuture<'matcher, BackendResult<(Merge<Tree>, Merge<Tree>)>>,

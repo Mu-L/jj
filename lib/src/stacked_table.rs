@@ -235,8 +235,6 @@ impl MutableTable {
         other.segment_add_entries_to(self);
     }
 
-    #[allow(unknown_lints)] // XXX FIXME (aseipp): nightly bogons; re-test this occasionally
-    #[allow(clippy::assigning_clones)]
     fn merge_in(&mut self, other: &Arc<ReadonlyTable>) {
         let mut maybe_own_ancestor = self.parent_file.clone();
         let mut maybe_other_ancestor = Some(other.clone());
@@ -295,8 +293,7 @@ impl MutableTable {
     /// If the MutableTable has more than half the entries of its parent
     /// ReadonlyTable, return MutableTable with the commits from both. This
     /// is done recursively, so the stack of index files has O(log n) files.
-    #[allow(unknown_lints)] // XXX FIXME (aseipp): nightly bogons; re-test this occasionally
-    #[allow(clippy::assigning_clones)]
+    #[expect(clippy::assigning_clones)]
     fn maybe_squash_with_ancestors(self) -> MutableTable {
         let mut num_new_entries = self.entries.len();
         let mut files_to_squash = vec![];
@@ -553,11 +550,12 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
+    use crate::tests::new_temp_dir;
 
     #[test_case(false; "memory")]
     #[test_case(true; "file")]
     fn stacked_table_empty(on_disk: bool) {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store = TableStore::init(temp_dir.path().to_path_buf(), 3);
         let mut_table = store.get_head().unwrap().start_mutation();
         let mut _saved_table = None;
@@ -577,7 +575,7 @@ mod tests {
     #[test_case(false; "memory")]
     #[test_case(true; "file")]
     fn stacked_table_single_key(on_disk: bool) {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store = TableStore::init(temp_dir.path().to_path_buf(), 3);
         let mut mut_table = store.get_head().unwrap().start_mutation();
         mut_table.add_entry(b"abc".to_vec(), b"value".to_vec());
@@ -598,7 +596,7 @@ mod tests {
     #[test_case(false; "memory")]
     #[test_case(true; "file")]
     fn stacked_table_multiple_keys(on_disk: bool) {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store = TableStore::init(temp_dir.path().to_path_buf(), 3);
         let mut mut_table = store.get_head().unwrap().start_mutation();
         mut_table.add_entry(b"zzz".to_vec(), b"val3".to_vec());
@@ -624,7 +622,7 @@ mod tests {
 
     #[test]
     fn stacked_table_multiple_keys_with_parent_file() {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store = TableStore::init(temp_dir.path().to_path_buf(), 3);
         let mut mut_table = store.get_head().unwrap().start_mutation();
         mut_table.add_entry(b"abd".to_vec(), b"value 2".to_vec());
@@ -654,7 +652,7 @@ mod tests {
 
     #[test]
     fn stacked_table_merge() {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store = TableStore::init(temp_dir.path().to_path_buf(), 3);
         let mut mut_base_table = store.get_head().unwrap().start_mutation();
         mut_base_table.add_entry(b"abc".to_vec(), b"value1".to_vec());
@@ -687,7 +685,7 @@ mod tests {
     #[test]
     fn stacked_table_automatic_merge() {
         // Same test as above, but here we let the store do the merging on load
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store = TableStore::init(temp_dir.path().to_path_buf(), 3);
         let mut mut_base_table = store.get_head().unwrap().start_mutation();
         mut_base_table.add_entry(b"abc".to_vec(), b"value1".to_vec());
@@ -724,7 +722,7 @@ mod tests {
 
     #[test]
     fn stacked_table_store_save_empty() {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store = TableStore::init(temp_dir.path().to_path_buf(), 3);
 
         let mut mut_table = store.get_head().unwrap().start_mutation();

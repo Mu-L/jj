@@ -93,7 +93,7 @@ impl Commit {
         &self.data.parents
     }
 
-    pub fn parents(&self) -> impl Iterator<Item = BackendResult<Commit>> + '_ {
+    pub fn parents(&self) -> impl Iterator<Item = BackendResult<Commit>> + use<'_> {
         self.data.parents.iter().map(|id| self.store.get_commit(id))
     }
 
@@ -101,7 +101,7 @@ impl Commit {
         &self.data.predecessors
     }
 
-    pub fn predecessors(&self) -> impl Iterator<Item = BackendResult<Commit>> + '_ {
+    pub fn predecessors(&self) -> impl Iterator<Item = BackendResult<Commit>> + use<'_> {
         self.data
             .predecessors
             .iter()
@@ -155,6 +155,12 @@ impl Commit {
 
     pub fn committer(&self) -> &Signature {
         &self.data.committer
+    }
+
+    ///  A commit is hidden if its commit id is not in the change id index.
+    pub fn is_hidden(&self, repo: &dyn Repo) -> bool {
+        let maybe_entries = repo.resolve_change_id(self.change_id());
+        maybe_entries.is_none_or(|entries| !entries.contains(&self.id))
     }
 
     /// A commit is discardable if it has no change from its parent, and an

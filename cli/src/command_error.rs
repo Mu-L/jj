@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::error;
+use std::error::Error as _;
 use std::io;
 use std::io::Write as _;
 use std::iter;
@@ -43,6 +44,7 @@ use jj_lib::repo::RepoLoaderError;
 use jj_lib::repo::RewriteRootCommit;
 use jj_lib::repo_path::RepoPathBuf;
 use jj_lib::repo_path::UiPathParseError;
+use jj_lib::revset;
 use jj_lib::revset::RevsetEvaluationError;
 use jj_lib::revset::RevsetParseError;
 use jj_lib::revset::RevsetParseErrorKind;
@@ -68,6 +70,7 @@ use crate::merge_tools::ConflictResolveError;
 use crate::merge_tools::DiffEditError;
 use crate::merge_tools::MergeToolConfigError;
 use crate::merge_tools::MergeToolPartialResolutionError;
+use crate::revset_util::BookmarkNameParseError;
 use crate::revset_util::UserRevsetEvaluationError;
 use crate::template_parser::TemplateParseError;
 use crate::template_parser::TemplateParseErrorKind;
@@ -537,6 +540,10 @@ jj currently does not support partial clones. To use jj with this repository, tr
             }
             match err {
                 GitFetchError::NoSuchRemote(_) => user_error(err),
+                GitFetchError::RemoteName(_) => user_error_with_hint(
+                    err,
+                    "Run `jj git remote rename` to give a different name.",
+                ),
                 GitFetchError::InvalidBranchPattern(_) => user_error(err),
                 GitFetchError::InternalGitError(err) => map_git2_error(err),
                 GitFetchError::Subprocess(_) => user_error(err),
@@ -557,7 +564,10 @@ jj currently does not support partial clones. To use jj with this repository, tr
         fn from(err: GitPushError) -> Self {
             match err {
                 GitPushError::NoSuchRemote(_) => user_error(err),
-                GitPushError::RemoteReservedForLocalGitRepo => user_error(err),
+                GitPushError::RemoteName(_) => user_error_with_hint(
+                    err,
+                    "Run `jj git remote rename` to give a different name.",
+                ),
                 GitPushError::RefInUnexpectedLocation(refs) => user_error_with_hint(
                     format!(
                         "Refusing to push a bookmark that unexpectedly moved on the remote. \
@@ -724,6 +734,8 @@ impl From<AbsorbError> for CommandError {
 fn find_source_parse_error_hint(err: &dyn error::Error) -> Option<String> {
     let source = err.source()?;
     if let Some(source) = source.downcast_ref() {
+        bookmark_name_parse_error_hint(source)
+    } else if let Some(source) = source.downcast_ref() {
         config_get_error_hint(source)
     } else if let Some(source) = source.downcast_ref() {
         file_pattern_parse_error_hint(source)
@@ -741,6 +753,20 @@ fn find_source_parse_error_hint(err: &dyn error::Error) -> Option<String> {
         template_parse_error_hint(source)
     } else {
         None
+    }
+}
+
+fn bookmark_name_parse_error_hint(err: &BookmarkNameParseError) -> Option<String> {
+    use revset::ExpressionKind;
+    match revset::parse_program(&err.input).map(|node| node.kind) {
+        Ok(ExpressionKind::RemoteSymbol(symbol)) => Some(format!(
+            "Looks like remote bookmark. Run `jj bookmark track {symbol}` to track it."
+        )),
+        _ => Some(
+            "See https://jj-vcs.github.io/jj/latest/revsets/ or use `jj help -k revsets` for how \
+             to quote symbols."
+                .into(),
+        ),
     }
 }
 
@@ -770,8 +796,8 @@ fn file_pattern_parse_error_hint(err: &FilePatternParseError) -> Option<String> 
 fn fileset_parse_error_hint(err: &FilesetParseError) -> Option<String> {
     match err.kind() {
         FilesetParseErrorKind::SyntaxError => Some(String::from(
-            "See https://jj-vcs.github.io/jj/latest/filesets/ for filesets syntax, or for how to \
-             match file paths.",
+            "See https://jj-vcs.github.io/jj/latest/filesets/ or use `jj help -k filesets` for \
+             filesets syntax and how to match file paths.",
         )),
         FilesetParseErrorKind::NoSuchFunction {
             name: _,
@@ -803,6 +829,11 @@ fn revset_parse_error_hint(err: &RevsetParseError) -> Option<String> {
     // Only for the bottom error, which is usually the root cause
     let bottom_err = iter::successors(Some(err), |e| e.origin()).last().unwrap();
     match bottom_err.kind() {
+        RevsetParseErrorKind::SyntaxError => Some(
+            "See https://jj-vcs.github.io/jj/latest/revsets/ or use `jj help -k revsets` for \
+             revsets syntax and how to quote symbols."
+                .into(),
+        ),
         RevsetParseErrorKind::NotPrefixOperator {
             op: _,
             similar_op,
@@ -892,7 +923,8 @@ fn try_handle_command_result(
             print_error(ui, "Config error: ", err, hints)?;
             writeln!(
                 ui.stderr_formatter().labeled("hint"),
-                "For help, see https://jj-vcs.github.io/jj/latest/config/."
+                "For help, see https://jj-vcs.github.io/jj/latest/config/ or use `jj help -k \
+                 config`."
             )?;
             Ok(ExitCode::from(1))
         }
@@ -938,7 +970,7 @@ fn print_error_sources(ui: &Ui, source: Option<&dyn error::Error>) -> io::Result
                 writeln!(formatter, "{err}")?;
             } else {
                 writeln!(formatter.labeled("heading"), "Caused by:")?;
-                for (i, err) in iter::successors(Some(err), |err| err.source()).enumerate() {
+                for (i, err) in iter::successors(Some(err), |&err| err.source()).enumerate() {
                     write!(formatter.labeled("heading"), "{}: ", i + 1)?;
                     writeln!(formatter, "{err}")?;
                 }
@@ -992,6 +1024,8 @@ fn handle_clap_error(ui: &mut Ui, err: &clap::Error, hints: &[ErrorHint]) -> io:
         _ => {}
     }
     write!(ui.stderr(), "{clap_str}")?;
+    // Skip the first source error, which should be printed inline.
+    print_error_sources(ui, err.source().and_then(|err| err.source()))?;
     print_error_hints(ui, hints)?;
     Ok(ExitCode::from(2))
 }
@@ -1004,7 +1038,7 @@ pub fn print_parse_diagnostics<T: error::Error>(
 ) -> io::Result<()> {
     for diag in diagnostics {
         writeln!(ui.warning_default(), "{context_message}")?;
-        for err in iter::successors(Some(diag as &dyn error::Error), |err| err.source()) {
+        for err in iter::successors(Some(diag as &dyn error::Error), |&err| err.source()) {
             writeln!(ui.stderr(), "{err}")?;
         }
         // If we add support for multiple error diagnostics, we might have to do

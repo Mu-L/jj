@@ -92,7 +92,7 @@ pub struct FilesetParseError {
 }
 
 /// Categories of fileset parsing and name resolution error.
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum FilesetParseErrorKind {
     #[error("Syntax error")]
@@ -725,13 +725,13 @@ mod tests {
 
     #[test]
     fn test_parse_error() {
-        insta::assert_snapshot!(parse_program("foo|").unwrap_err().to_string(), @r###"
+        insta::assert_snapshot!(parse_program("foo|").unwrap_err().to_string(), @r"
          --> 1:5
           |
         1 | foo|
           |     ^---
           |
           = expected `~` or <primary>
-        "###);
+        ");
     }
 }

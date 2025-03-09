@@ -66,10 +66,12 @@ so you can address any remaining minor comments and then merge the PR yourself
 when you're ready. If you realize that some comments require non-trivial
 changes, please ask your reviewer to take another look.
 
+If your employer pays anyone (not necessarily you) to contribute to Jujutsu,
+please make sure your GitHub username is [recorded](paid_contributors.md).
 To avoid conflicts of interest, please don't merge a PR that has only been
-approved by someone from the same organization. Similarly, as a reviewer,
-there is no need to approve your coworkers' PRs, since the author should await
-an approval from someone else anyway. It is of course still appreciated if you
+approved by someone from the same organization. Similarly, as a reviewer, there
+is no need to approve your coworkers' PRs, since the author should await an
+approval from someone else anyway. It is of course still appreciated if you
 review and comment on their PRs. Also, if the PR seems completely unrelated to
 your company's interests, do feel free to approve it.
 
@@ -136,7 +138,7 @@ recommended steps.
 One-time setup:
 
     rustup toolchain add nightly  # wanted for 'rustfmt'
-    rustup toolchain add 1.76     # also specified in Cargo.toml
+    rustup toolchain add 1.84     # also specified in Cargo.toml
     cargo install --locked bacon
     cargo install --locked cargo-insta
     cargo install --locked cargo-nextest
@@ -174,7 +176,7 @@ These are listed roughly in order of decreasing importance.
 3. Your code will be rejected if it cannot be compiled with the minimal
    supported version of Rust ("MSRV"). Currently, `jj` follows a rather
    casual MSRV policy: "The current `rustc` stable version, minus one."
-   As of this writing, that version is **1.76.0**.
+   As of this writing, that version is **1.84.0**.
 
 4. Your code needs to pass `cargo clippy`. You can also
    use `cargo +nightly clippy` if you wish to see more warnings.

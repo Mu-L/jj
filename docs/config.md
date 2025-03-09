@@ -343,6 +343,15 @@ To prevent rewriting commits authored by other users:
 Ancestors of the configured set are also immutable. The root commit is always
 immutable even if the set is empty.
 
+Immutable commits (other than the root commit) can be rewritten using the
+`--ignore-immutable` CLI flag.
+
+!!! warning
+
+    Using `--ignore-immutable` will allow you to rewrite any commit in the
+    history, and all descendants, without warning. Use this power wisely, and
+    remember `jj undo`.
+
 ### Behavior of prev and next commands
 
 If you prefer using an "edit-based" workflow, rather than squashing
@@ -463,6 +472,14 @@ To customize these separately, use the `format_short_commit_id()` and
 [template-aliases]
 # Uppercase change ids. `jj` treats change and commit ids as case-insensitive.
 'format_short_change_id(id)' = 'format_short_id(id).upper()'
+```
+
+Operation ids can be customized by the `format_short_operation_id()` alias:
+
+```toml
+[template-aliases]
+# Always show 12 characters
+'format_short_operation_id(id)' = 'id.short(12)'
 ```
 
 To get shorter prefixes for certain revisions, set `revsets.short-prefixes`:
@@ -1120,7 +1137,7 @@ Setting the backend to `"none"` disables signing.
 
 ```toml
 [signing]
-sign-all = true
+behavior = "own"
 backend = "gpg"
 key = "4ED556E9729E000F"
 ## You can set `key` to anything accepted by `gpg -u`
@@ -1147,7 +1164,7 @@ backends.gpg.allow-expired-keys = false
 
 ```toml
 [signing]
-sign-all = true
+behavior = "own"
 backend = "ssh"
 key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGj+J6N6SO+4P8dOZqfR1oiay2yxhhHnagH52avUqw5h"
 ## You can also use a path instead of embedding the key
@@ -1176,16 +1193,17 @@ backends.ssh.allowed-signers = "/path/to/allowed-signers"
 
 ### Sign commits only on `jj git push`
 
-Instead of signing all commits during creation when `signing.sign-all` is
-set to `true`, the `git.sign-on-push` configuration can be used to sign
+Instead of signing all commits during creation when `signing.behavior` is
+set to `own`, the `git.sign-on-push` configuration can be used to sign
 commits only upon running `jj git push`. All mutable unsigned commits
 being pushed will be signed prior to pushing. This might be preferred if the
 signing backend requires user interaction or is slow, so that signing is
 performed in a single batch operation.
 
 ```toml
-# Configure signing backend as before, without setting `signing.sign-all`
+# Configure signing backend as before, but lazily signing only on push.
 [signing]
+behavior = "drop"
 backend = "ssh"
 key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGj+J6N6SO+4P8dOZqfR1oiay2yxhhHnagH52avUqw5h"
 
@@ -1193,6 +1211,18 @@ key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGj+J6N6SO+4P8dOZqfR1oiay2yxhhHnagH52
 sign-on-push = true
 ```
 
+### Manually signing commits
+
+You can use [`jj sign`](./cli-reference.md#jj-sign)/[`jj unsign`](./cli-reference.md#jj-unsign)
+to sign/unsign commits manually.
+
+
+!!! warning
+
+    `jj sign` is always signing commits, even if they are already signed by the
+    user. While this is cumbersome for users signing via hardware devices, we
+    cannot reliably check if a commit is already signed without creating a
+    signature (see [this issue](https://github.com/jj-vcs/jj/issues/5786)).
 
 ## Commit Signature Verification
 
@@ -1221,6 +1251,14 @@ single remote, or a list of remotes to fetch from multiple places:
 ```sh
 jj config set --repo git.fetch "upstream"
 jj config set --repo git.fetch '["origin", "upstream"]'
+```
+
+By default, the specified remote names matches exactly. You can also use a
+[string pattern](revsets.md#string-patterns) to select remotes using patterns:
+
+```sh
+jj config set --repo git.fetch "glob:*"
+jj config set --repo git.fetch '["glob:remote*", "glob:upstream*"]'
 ```
 
 Similarly, you can also set the variable `git.push` to cause `jj git push` to
@@ -1350,7 +1388,7 @@ executable on your system](https://facebook.github.io/watchman/docs/install).
 
 You can configure `jj` to use watchman triggers to automatically create
 snapshots on filesystem changes by setting
-`core.watchman.register_snapshot_trigger = true`.
+`core.watchman.register-snapshot-trigger = true`.
 
 You can check whether Watchman is enabled and whether it is installed correctly
 using `jj debug watchman status`.
@@ -1417,13 +1455,18 @@ services. It is an error for both of these files to exist.
 | Windows  | `{FOLDERID_RoamingAppData}\jj\config.toml`         | `C:\Users\Alice\AppData\Roaming\jj\config.toml`           |
 
 The location of the `jj` config file can also be overridden with the
-`JJ_CONFIG` environment variable. If it is not empty, it should contain the path
-to a TOML file that will be used instead of any configuration file in the
-default locations. For example,
+`JJ_CONFIG` environment variable. If it is not empty, it will be used instead
+of any configuration file in the default locations. If it is a path to a TOML
+file, then that file will be loaded instead. If it is a path to a directory,
+then all the TOML files in that directory will be loaded in lexicographic order
+and merged. This allows you to split your configuration across multiple files
+and can combine well with [Conditional Variables](#conditional-variables).
 
+For example,
 ```shell
 env JJ_CONFIG=/dev/null jj log       # Ignores any settings specified in the config file.
 ```
+could be used to run jj without loading any user configs.
 
 ### JSON Schema Support
 
@@ -1452,9 +1495,6 @@ Here are some popular editors with TOML schema validation support:
 
 - JetBrains IDEs (IntelliJ, PyCharm, etc)
   - Install [TOML](https://plugins.jetbrains.com/plugin/8195-toml) plugin
-
-- Sublime Text
-  - Install [LSP](https://packagecontrol.io/packages/LSP) and [LSP-taplo](https://packagecontrol.io/packages/LSP-taplo)
 
 - Emacs
   - Install [lsp-mode](https://github.com/emacs-lsp/lsp-mode) and [toml-mode](https://github.com/dryman/toml-mode.el)
@@ -1490,12 +1530,14 @@ jj --config-file=extra-config.toml log
 
 ### Conditional variables
 
-You can conditionally enable config variables by using `--when` and
-`[[--scope]]` tables. Variables defined in `[[--scope]]` tables are expanded to
-the root table. `--when` specifies the condition to enable the scope table.
+You can conditionally enable config variables by using `--when`.
 
-If no conditions are specified, table is always enabled. If multiple conditions
-are specified, the intersection is used.
+#### Using `[[--scope]]` tables
+Variables defined in `[[--scope]]` tables are expanded to the root table.
+`--when` specifies the condition to enable the scope table.
+
+If no conditions are specified, the table is always enabled. If multiple
+conditions are specified, their intersection is used.
 
 ```toml
 [user]
@@ -1519,7 +1561,38 @@ paginate = "never"
 pager = "delta"
 ```
 
-Condition keys:
+#### Using multiple files
+`--when` can also be used on the top level of a TOML file, which is convenient
+when splitting your config across multiple files using [`JJ_CONFIG`](#user-config-file).
+The behavior of conditions are the same as when using `[[--scope]]` tables.
+
+Note that the TOML files are read and merged in lexicographical order. This
+means that in the below example `work.toml` will override `config.toml`, but if
+`work.toml` would be renamed `at_work.toml` the overriding would not work as
+intended.
+
+```toml
+# In config.toml
+[user]
+name = "YOUR NAME"
+email = "YOUR_DEFAULT_EMAIL@example.com"
+```
+
+```toml
+# In work.toml
+--when.repositories = ["~/the/work/repo"]
+
+[user]
+email = "YOUR_WORK_EMAIL@workplace.com"
+
+[revset-aliases]
+work = "heads(::@ ~ description(exact:''))::"
+
+[aliases]
+wip = ["log", "-r", "work"]
+```
+
+#### Available condition keys
 
 * `--when.repositories`: List of paths to match the repository path prefix.
 

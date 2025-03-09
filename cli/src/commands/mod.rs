@@ -32,7 +32,6 @@ mod fix;
 #[cfg(feature = "git")]
 mod git;
 mod help;
-mod init;
 mod interdiff;
 mod log;
 mod new;
@@ -46,19 +45,22 @@ mod restore;
 mod root;
 mod run;
 mod show;
+mod sign;
 mod simplify_parents;
 mod sparse;
 mod split;
 mod squash;
 mod status;
 mod tag;
-mod unsquash;
+mod unsign;
 mod util;
 mod version;
 mod workspace;
 
 use std::fmt::Debug;
 
+use clap::builder::styling::AnsiColor;
+use clap::builder::Styles;
 use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Subcommand;
@@ -67,12 +69,18 @@ use tracing::instrument;
 
 use crate::cli_util::Args;
 use crate::cli_util::CommandHelper;
-use crate::command_error::user_error_with_hint;
 use crate::command_error::CommandError;
 use crate::complete;
 use crate::ui::Ui;
 
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Yellow.on_default().bold())
+    .usage(AnsiColor::Yellow.on_default().bold())
+    .literal(AnsiColor::Green.on_default().bold())
+    .placeholder(AnsiColor::Green.on_default());
+
 #[derive(clap::Parser, Clone, Debug)]
+#[command(styles = STYLES)]
 #[command(disable_help_subcommand = true)]
 #[command(after_long_help = help::show_keyword_hint_after_help())]
 #[command(add = SubcommandCandidates::new(complete::aliases))]
@@ -107,7 +115,6 @@ enum Command {
     #[command(subcommand)]
     Git(git::GitCommand),
     Help(help::HelpArgs),
-    Init(init::InitArgs),
     Interdiff(interdiff::InterdiffArgs),
     Log(log::LogArgs),
     New(new::NewArgs),
@@ -120,16 +127,12 @@ enum Command {
     Rebase(rebase::RebaseArgs),
     Resolve(resolve::ResolveArgs),
     Restore(restore::RestoreArgs),
-    #[command(
-        hide = true,
-        help_template = "Not a real subcommand; consider `jj backout` or `jj restore`"
-    )]
-    Revert(DummyCommandArgs),
     Root(root::RootArgs),
     #[command(hide = true)]
     // TODO: Flesh out.
     Run(run::RunArgs),
     Show(show::ShowArgs),
+    Sign(sign::SignArgs),
     SimplifyParents(simplify_parents::SimplifyParentsArgs),
     #[command(subcommand)]
     Sparse(sparse::SparseCommand),
@@ -142,22 +145,10 @@ enum Command {
     Util(util::UtilCommand),
     /// Undo an operation (shortcut for `jj op undo`)
     Undo(operation::undo::OperationUndoArgs),
-    // TODO: Delete `unsquash` in jj 0.28+
-    #[command(hide = true)]
-    Unsquash(unsquash::UnsquashArgs),
-    // TODO: Delete `untrack` in jj 0.27+
-    #[command(hide = true)]
-    Untrack(file::untrack::FileUntrackArgs),
+    Unsign(unsign::UnsignArgs),
     Version(version::VersionArgs),
     #[command(subcommand)]
     Workspace(workspace::WorkspaceCommand),
-}
-
-/// A dummy command that accepts any arguments
-#[derive(clap::Args, Clone, Debug)]
-struct DummyCommandArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
-    _args: Vec<String>,
 }
 
 pub fn default_app() -> clap::Command {
@@ -191,7 +182,6 @@ pub fn run_command(ui: &mut Ui, command_helper: &CommandHelper) -> Result<(), Co
         #[cfg(feature = "git")]
         Command::Git(args) => git::cmd_git(ui, command_helper, args),
         Command::Help(args) => help::cmd_help(ui, command_helper, args),
-        Command::Init(args) => init::cmd_init(ui, command_helper, args),
         Command::Interdiff(args) => interdiff::cmd_interdiff(ui, command_helper, args),
         Command::Log(args) => log::cmd_log(ui, command_helper, args),
         Command::New(args) => new::cmd_new(ui, command_helper, args),
@@ -203,24 +193,20 @@ pub fn run_command(ui: &mut Ui, command_helper: &CommandHelper) -> Result<(), Co
         Command::Rebase(args) => rebase::cmd_rebase(ui, command_helper, args),
         Command::Resolve(args) => resolve::cmd_resolve(ui, command_helper, args),
         Command::Restore(args) => restore::cmd_restore(ui, command_helper, args),
-        Command::Revert(_args) => revert(),
         Command::Root(args) => root::cmd_root(ui, command_helper, args),
         Command::Run(args) => run::cmd_run(ui, command_helper, args),
         Command::SimplifyParents(args) => {
             simplify_parents::cmd_simplify_parents(ui, command_helper, args)
         }
         Command::Show(args) => show::cmd_show(ui, command_helper, args),
+        Command::Sign(args) => sign::cmd_sign(ui, command_helper, args),
         Command::Sparse(args) => sparse::cmd_sparse(ui, command_helper, args),
         Command::Split(args) => split::cmd_split(ui, command_helper, args),
         Command::Squash(args) => squash::cmd_squash(ui, command_helper, args),
         Command::Status(args) => status::cmd_status(ui, command_helper, args),
         Command::Tag(args) => tag::cmd_tag(ui, command_helper, args),
         Command::Undo(args) => operation::undo::cmd_op_undo(ui, command_helper, args),
-        Command::Unsquash(args) => unsquash::cmd_unsquash(ui, command_helper, args),
-        Command::Untrack(args) => {
-            let cmd = renamed_cmd("untrack", "file untrack", file::untrack::cmd_file_untrack);
-            cmd(ui, command_helper, args)
-        }
+        Command::Unsign(args) => unsign::cmd_unsign(ui, command_helper, args),
         Command::Util(args) => util::cmd_util(ui, command_helper, args),
         Command::Version(args) => version::cmd_version(ui, command_helper, args),
         Command::Workspace(args) => workspace::cmd_workspace(ui, command_helper, args),
@@ -244,13 +230,6 @@ pub(crate) fn renamed_cmd<Args>(
         )?;
         cmd(ui, command, args)
     }
-}
-
-fn revert() -> Result<(), CommandError> {
-    Err(user_error_with_hint(
-        "No such subcommand: revert",
-        "Consider `jj backout` or `jj restore`",
-    ))
 }
 
 #[cfg(test)]

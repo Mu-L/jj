@@ -22,6 +22,7 @@ use jj_lib::revset::RevsetFilterPredicate;
 use tracing::instrument;
 
 use crate::cli_util::print_conflicted_paths;
+use crate::cli_util::print_snapshot_stats;
 use crate::cli_util::CommandHelper;
 use crate::command_error::CommandError;
 use crate::diff_util::get_copy_records;
@@ -53,6 +54,11 @@ pub(crate) fn cmd_status(
     args: &StatusArgs,
 ) -> Result<(), CommandError> {
     let (workspace_command, snapshot_stats) = command.workspace_helper_with_stats(ui)?;
+    print_snapshot_stats(
+        ui,
+        &snapshot_stats,
+        workspace_command.env().path_converter(),
+    )?;
     let repo = workspace_command.repo();
     let maybe_wc_commit = workspace_command
         .get_wc_commit_id()
@@ -95,8 +101,6 @@ pub(crate) fn cmd_status(
             }
 
             if wc_has_untracked {
-                // TODO: make sure this always display all untracked non-ignored files, even
-                // when using watchman. See https://github.com/jj-vcs/jj/commit/168c7979feab40d58f49fe19683975697a7bc089 for details.
                 writeln!(formatter, "Untracked paths:")?;
                 formatter.with_label("diff", |formatter| {
                     for path in snapshot_stats.untracked_paths.keys() {
@@ -106,17 +110,6 @@ pub(crate) fn cmd_status(
                     io::Result::Ok(())
                 })?;
             }
-        }
-
-        // TODO: Conflicts should also be filtered by the `matcher`. See the related
-        // TODO on `MergedTree::conflicts()`.
-        let conflicts = wc_commit.tree()?.conflicts().collect_vec();
-        if !conflicts.is_empty() {
-            writeln!(
-                formatter.labeled("conflict"),
-                "There are unresolved conflicts at these paths:"
-            )?;
-            print_conflicted_paths(conflicts, formatter, &workspace_command)?;
         }
 
         let template = workspace_command.commit_summary_template();
@@ -131,6 +124,15 @@ pub(crate) fn cmd_status(
         }
 
         if wc_commit.has_conflict()? {
+            // TODO: Conflicts should also be filtered by the `matcher`. See the related
+            // TODO on `MergedTree::conflicts()`.
+            let conflicts = wc_commit.tree()?.conflicts().collect_vec();
+            writeln!(
+                formatter.labeled("warning").with_heading("Warning: "),
+                "There are unresolved conflicts at these paths:"
+            )?;
+            print_conflicted_paths(conflicts, formatter, &workspace_command)?;
+
             let wc_revset = RevsetExpression::commit(wc_commit.id().clone());
 
             // Ancestors with conflicts, excluding the current working copy commit.
@@ -151,7 +153,7 @@ pub(crate) fn cmd_status(
                 let parent = parent?;
                 if parent.has_conflict()? {
                     writeln!(
-                        formatter.labeled("hint"),
+                        formatter.labeled("hint").with_heading("Hint: "),
                         "Conflict in parent commit has been resolved in working copy"
                     )?;
                     break;
@@ -172,11 +174,11 @@ pub(crate) fn cmd_status(
         .view()
         .all_remote_bookmarks()
         .filter(|(_, remote_ref)| remote_ref.target.has_conflict())
-        .map(|(full_name, _)| full_name)
+        .map(|(symbol, _)| symbol)
         .collect_vec();
     if !conflicted_local_bookmarks.is_empty() {
         writeln!(
-            formatter.labeled("conflict"),
+            formatter.labeled("warning").with_heading("Warning: "),
             "These bookmarks have conflicts:"
         )?;
         for bookmark_name in conflicted_local_bookmarks {
@@ -185,27 +187,24 @@ pub(crate) fn cmd_status(
             writeln!(formatter)?;
         }
         writeln!(
-            formatter,
-            "  Use `jj bookmark list` to see details. Use `jj bookmark set <name> -r <rev>` to \
+            formatter.labeled("hint").with_heading("Hint: "),
+            "Use `jj bookmark list` to see details. Use `jj bookmark set <name> -r <rev>` to \
              resolve."
         )?;
     }
     if !conflicted_remote_bookmarks.is_empty() {
         writeln!(
-            formatter.labeled("conflict"),
+            formatter.labeled("warning").with_heading("Warning: "),
             "These remote bookmarks have conflicts:"
         )?;
-        for (bookmark_name, remote_name) in conflicted_remote_bookmarks {
+        for symbol in conflicted_remote_bookmarks {
             write!(formatter, "  ")?;
-            write!(
-                formatter.labeled("bookmark"),
-                "{bookmark_name}@{remote_name}"
-            )?;
+            write!(formatter.labeled("bookmark"), "{symbol}")?;
             writeln!(formatter)?;
         }
         writeln!(
-            formatter,
-            "  Use `jj bookmark list` to see details. Use `jj git fetch` to resolve."
+            formatter.labeled("hint").with_heading("Hint: "),
+            "Use `jj bookmark list` to see details. Use `jj git fetch` to resolve."
         )?;
     }
 

@@ -2,7 +2,7 @@
 fsmonitor = "none"
 
 [core.watchman]
-register_snapshot_trigger = false
+register-snapshot-trigger = false
 
 [debug]
 # commit-timestamp = <now>
@@ -21,6 +21,8 @@ username = ""
 
 [signing]
 backend = "none"
+behavior = "keep"
+# key = <none>
 
 [signing.backends.gpg]
 allow-expired-keys = false

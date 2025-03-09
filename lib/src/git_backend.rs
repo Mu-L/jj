@@ -704,7 +704,7 @@ fn deserialize_extras(commit: &mut Commit, bytes: &[u8]) {
 /// Used for preventing GC of commits we create.
 fn to_no_gc_ref_update(id: &CommitId) -> gix::refs::transaction::RefEdit {
     let name = format!("{NO_GC_REF_NAMESPACE}{id}");
-    let new = gix::refs::Target::Object(validate_git_object_id(id).unwrap());
+    let new = gix::refs::Target::Object(gix::ObjectId::from_bytes_or_panic(id.as_bytes()));
     let expected = gix::refs::transaction::PreviousValue::ExistingMustMatch(new.clone());
     gix::refs::transaction::RefEdit {
         change: gix::refs::transaction::Change::Update {
@@ -826,7 +826,7 @@ fn validate_git_object_id(id: &impl ObjectId) -> BackendResult<gix::ObjectId> {
             hash: id.hex(),
         });
     }
-    Ok(id.as_bytes().try_into().unwrap())
+    Ok(gix::ObjectId::from_bytes_or_panic(id.as_bytes()))
 }
 
 fn map_not_found_err(err: gix::object::find::existing::Error, id: &impl ObjectId) -> BackendError {
@@ -1068,7 +1068,7 @@ impl Backend for GitBackend {
                     } => gix::objs::tree::Entry {
                         mode: gix::object::tree::EntryKind::Blob.into(),
                         filename: name.into(),
-                        oid: id.as_bytes().try_into().unwrap(),
+                        oid: gix::ObjectId::from_bytes_or_panic(id.as_bytes()),
                     },
                     TreeValue::File {
                         id,
@@ -1076,27 +1076,27 @@ impl Backend for GitBackend {
                     } => gix::objs::tree::Entry {
                         mode: gix::object::tree::EntryKind::BlobExecutable.into(),
                         filename: name.into(),
-                        oid: id.as_bytes().try_into().unwrap(),
+                        oid: gix::ObjectId::from_bytes_or_panic(id.as_bytes()),
                     },
                     TreeValue::Symlink(id) => gix::objs::tree::Entry {
                         mode: gix::object::tree::EntryKind::Link.into(),
                         filename: name.into(),
-                        oid: id.as_bytes().try_into().unwrap(),
+                        oid: gix::ObjectId::from_bytes_or_panic(id.as_bytes()),
                     },
                     TreeValue::Tree(id) => gix::objs::tree::Entry {
                         mode: gix::object::tree::EntryKind::Tree.into(),
                         filename: name.into(),
-                        oid: id.as_bytes().try_into().unwrap(),
+                        oid: gix::ObjectId::from_bytes_or_panic(id.as_bytes()),
                     },
                     TreeValue::GitSubmodule(id) => gix::objs::tree::Entry {
                         mode: gix::object::tree::EntryKind::Commit.into(),
                         filename: name.into(),
-                        oid: id.as_bytes().try_into().unwrap(),
+                        oid: gix::ObjectId::from_bytes_or_panic(id.as_bytes()),
                     },
                     TreeValue::Conflict(id) => gix::objs::tree::Entry {
                         mode: gix::object::tree::EntryKind::Blob.into(),
                         filename: (name.to_owned() + CONFLICT_SUFFIX).into(),
-                        oid: id.as_bytes().try_into().unwrap(),
+                        oid: gix::ObjectId::from_bytes_or_panic(id.as_bytes()),
                     },
                 }
             })
@@ -1335,7 +1335,7 @@ impl Backend for GitBackend {
                     .map_err(|err| to_invalid_utf8_err(err, head_id))?;
 
                 let target = RepoPathBuf::from_internal_string(dest);
-                if !paths.map_or(true, |paths| paths.contains(&target)) {
+                if !paths.is_none_or(|paths| paths.contains(&target)) {
                     return Ok(None);
                 }
 
@@ -1420,7 +1420,7 @@ fn write_tree_conflict(
     .map(|(name, tree_id)| gix::objs::tree::Entry {
         mode: gix::object::tree::EntryKind::Tree.into(),
         filename: name.into(),
-        oid: tree_id.as_bytes().try_into().unwrap(),
+        oid: gix::ObjectId::from_bytes_or_panic(tree_id.as_bytes()),
     })
     .collect_vec();
     let readme_id = repo
@@ -1531,7 +1531,6 @@ fn bytes_vec_from_json(value: &serde_json::Value) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use assert_matches::assert_matches;
-    use git2::Oid;
     use hex::ToHex;
     use pollster::FutureExt;
     use test_case::test_case;
@@ -1539,67 +1538,111 @@ mod tests {
     use super::*;
     use crate::config::StackedConfig;
     use crate::content_hash::blake2b_hash;
+    use crate::tests::new_temp_dir;
+
+    const GIT_USER: &str = "Someone";
+    const GIT_EMAIL: &str = "someone@example.com";
+
+    fn git_config() -> Vec<bstr::BString> {
+        vec![
+            format!("user.name = {GIT_USER}").into(),
+            format!("user.email = {GIT_EMAIL}").into(),
+            "init.defaultBranch = master".into(),
+        ]
+    }
+
+    fn open_options() -> gix::open::Options {
+        gix::open::Options::isolated().config_overrides(git_config())
+    }
+
+    fn git_init(directory: impl AsRef<Path>) -> gix::Repository {
+        gix::ThreadSafeRepository::init_opts(
+            directory,
+            gix::create::Kind::WithWorktree,
+            gix::create::Options::default(),
+            open_options(),
+        )
+        .unwrap()
+        .to_thread_local()
+    }
 
     #[test_case(false; "legacy tree format")]
     #[test_case(true; "tree-level conflict format")]
     fn read_plain_git_commit(uses_tree_conflict_format: bool) {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store_path = temp_dir.path();
         let git_repo_path = temp_dir.path().join("git");
-        let git_repo = git2::Repository::init(git_repo_path).unwrap();
+        let git_repo = git_init(git_repo_path);
 
         // Add a commit with some files in
-        let blob1 = git_repo.blob(b"content1").unwrap();
-        let blob2 = git_repo.blob(b"normal").unwrap();
-        let mut dir_tree_builder = git_repo.treebuilder(None).unwrap();
-        dir_tree_builder.insert("normal", blob1, 0o100644).unwrap();
-        dir_tree_builder.insert("symlink", blob2, 0o120000).unwrap();
-        let dir_tree_id = dir_tree_builder.write().unwrap();
-        let mut root_tree_builder = git_repo.treebuilder(None).unwrap();
-        root_tree_builder
-            .insert("dir", dir_tree_id, 0o040000)
+        let blob1 = git_repo.write_blob(b"content1").unwrap().detach();
+        let blob2 = git_repo.write_blob(b"normal").unwrap().detach();
+        let mut dir_tree_editor = git_repo.empty_tree().edit().unwrap();
+        dir_tree_editor
+            .upsert("normal", gix::object::tree::EntryKind::Blob, blob1)
             .unwrap();
-        let root_tree_id = root_tree_builder.write().unwrap();
-        let git_author = git2::Signature::new(
-            "git author",
-            "git.author@example.com",
-            &git2::Time::new(1000, 60),
-        )
-        .unwrap();
-        let git_committer = git2::Signature::new(
-            "git committer",
-            "git.committer@example.com",
-            &git2::Time::new(2000, -480),
-        )
-        .unwrap();
-        let git_tree = git_repo.find_tree(root_tree_id).unwrap();
+        dir_tree_editor
+            .upsert("symlink", gix::object::tree::EntryKind::Link, blob2)
+            .unwrap();
+        let dir_tree_id = dir_tree_editor.write().unwrap().detach();
+        let mut root_tree_builder = git_repo.empty_tree().edit().unwrap();
+        root_tree_builder
+            .upsert("dir", gix::object::tree::EntryKind::Tree, dir_tree_id)
+            .unwrap();
+        let root_tree_id = root_tree_builder.write().unwrap().detach();
+        let git_author = gix::actor::Signature {
+            name: "git author".into(),
+            email: "git.author@example.com".into(),
+            time: gix::date::Time::new(1000, 60 * 60),
+        };
+        let git_committer = gix::actor::Signature {
+            name: "git committer".into(),
+            email: "git.committer@example.com".into(),
+            time: gix::date::Time::new(2000, -480 * 60),
+        };
         let git_commit_id = git_repo
-            .commit(
-                None,
-                &git_author,
+            .commit_as(
                 &git_committer,
+                &git_author,
+                "refs/heads/dummy",
                 "git commit message",
-                &git_tree,
-                &[],
+                root_tree_id,
+                [] as [gix::ObjectId; 0],
             )
+            .unwrap()
+            .detach();
+        git_repo
+            .find_reference("refs/heads/dummy")
+            .unwrap()
+            .delete()
             .unwrap();
         let commit_id = CommitId::from_hex("efdcea5ca4b3658149f899ca7feee6876d077263");
         // The change id is the leading reverse bits of the commit id
         let change_id = ChangeId::from_hex("c64ee0b6e16777fe53991f9281a6cd25");
         // Check that the git commit above got the hash we expect
-        assert_eq!(git_commit_id.as_bytes(), commit_id.as_bytes());
+        assert_eq!(
+            git_commit_id.as_bytes(),
+            commit_id.as_bytes(),
+            "{git_commit_id:?} vs {commit_id:?}"
+        );
 
         // Add an empty commit on top
         let git_commit_id2 = git_repo
-            .commit(
-                None,
-                &git_author,
+            .commit_as(
                 &git_committer,
+                &git_author,
+                "refs/heads/dummy2",
                 "git commit message 2",
-                &git_tree,
-                &[&git_repo.find_commit(git_commit_id).unwrap()],
+                root_tree_id,
+                [git_commit_id],
             )
+            .unwrap()
+            .detach();
+        git_repo
+            .find_reference("refs/heads/dummy2")
+            .unwrap()
+            .delete()
             .unwrap();
         let commit_id2 = CommitId::from_bytes(git_commit_id2.as_bytes());
 
@@ -1611,11 +1654,12 @@ mod tests {
             .unwrap();
         // Ref should be created only for the head commit
         let git_refs = backend
-            .open_git_repo()
+            .git_repo()
+            .references()
             .unwrap()
-            .references_glob("refs/jj/keep/*")
+            .prefixed("refs/jj/keep/")
             .unwrap()
-            .map(|git_ref| git_ref.unwrap().target().unwrap())
+            .map(|git_ref| git_ref.unwrap().id().detach())
             .collect_vec();
         assert_eq!(git_refs, vec![git_commit_id2]);
 
@@ -1706,22 +1750,26 @@ mod tests {
     #[test]
     fn read_git_commit_without_importing() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store_path = temp_dir.path();
         let git_repo_path = temp_dir.path().join("git");
-        let git_repo = git2::Repository::init(git_repo_path).unwrap();
+        let git_repo = git_init(&git_repo_path);
 
-        let signature = git2::Signature::now("Someone", "someone@example.com").unwrap();
-        let empty_tree_id = Oid::from_str("4b825dc642cb6eb9a060e54bf8d69288fbee4904").unwrap();
-        let empty_tree = git_repo.find_tree(empty_tree_id).unwrap();
+        let signature = gix::actor::Signature {
+            name: GIT_USER.into(),
+            email: GIT_EMAIL.into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let empty_tree_id =
+            gix::ObjectId::from_hex(b"4b825dc642cb6eb9a060e54bf8d69288fbee4904").unwrap();
         let git_commit_id = git_repo
-            .commit(
-                Some("refs/heads/main"),
+            .commit_as(
                 &signature,
                 &signature,
+                "refs/heads/main",
                 "git commit message",
-                &empty_tree,
-                &[],
+                empty_tree_id,
+                [] as [gix::ObjectId; 0],
             )
             .unwrap();
 
@@ -1746,34 +1794,41 @@ mod tests {
     #[test]
     fn read_signed_git_commit() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store_path = temp_dir.path();
         let git_repo_path = temp_dir.path().join("git");
-        let git_repo = git2::Repository::init(git_repo_path).unwrap();
+        let git_repo = git_init(git_repo_path);
 
-        let signature = git2::Signature::now("Someone", "someone@example.com").unwrap();
-        let empty_tree_id = Oid::from_str("4b825dc642cb6eb9a060e54bf8d69288fbee4904").unwrap();
-        let empty_tree = git_repo.find_tree(empty_tree_id).unwrap();
+        let signature = gix::actor::Signature {
+            name: GIT_USER.into(),
+            email: GIT_EMAIL.into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let empty_tree_id =
+            gix::ObjectId::from_hex(b"4b825dc642cb6eb9a060e54bf8d69288fbee4904").unwrap();
 
-        let commit_buf = git_repo
-            .commit_create_buffer(
-                &signature,
-                &signature,
-                "git commit message",
-                &empty_tree,
-                &[],
-            )
-            .unwrap();
-
-        // libgit2-rs works with &strs here for some reason
-        let commit_buf = std::str::from_utf8(&commit_buf).unwrap();
         let secure_sig =
             "here are some ASCII bytes to be used as a test signature\n\ndefinitely not PGP\n";
 
-        // git2 appears to append newline unconditionally
-        let git_commit_id = git_repo
-            .commit_signed(commit_buf, secure_sig.trim_end_matches('\n'), None)
-            .unwrap();
+        let mut commit = gix::objs::Commit {
+            tree: empty_tree_id,
+            parents: smallvec::SmallVec::new(),
+            author: signature.clone(),
+            committer: signature.clone(),
+            encoding: None,
+            message: "git commit message".into(),
+            extra_headers: Vec::new(),
+        };
+
+        let mut commit_buf = Vec::new();
+        commit.write_to(&mut commit_buf).unwrap();
+        let commit_str = std::str::from_utf8(&commit_buf).unwrap();
+
+        commit
+            .extra_headers
+            .push(("gpgsig".into(), secure_sig.into()));
+
+        let git_commit_id = git_repo.write_object(&commit).unwrap();
 
         let backend = GitBackend::init_external(&settings, store_path, git_repo.path()).unwrap();
 
@@ -1786,7 +1841,7 @@ mod tests {
 
         // converting to string for nicer assert diff
         assert_eq!(std::str::from_utf8(&sig.sig).unwrap(), secure_sig);
-        assert_eq!(std::str::from_utf8(&sig.data).unwrap(), commit_buf);
+        assert_eq!(std::str::from_utf8(&sig.data).unwrap(), commit_str);
     }
 
     #[test]
@@ -1839,10 +1894,10 @@ mod tests {
     #[test]
     fn git_commit_parents() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store_path = temp_dir.path();
         let git_repo_path = temp_dir.path().join("git");
-        let git_repo = git2::Repository::init(git_repo_path).unwrap();
+        let git_repo = git_init(&git_repo_path);
 
         let backend = GitBackend::init_external(&settings, store_path, git_repo.path()).unwrap();
         let mut commit = Commit {
@@ -1873,7 +1928,7 @@ mod tests {
         let first_commit = backend.read_commit(&first_id).block_on().unwrap();
         assert_eq!(first_commit, commit);
         let first_git_commit = git_repo.find_commit(git_id(&first_id)).unwrap();
-        assert_eq!(first_git_commit.parent_ids().collect_vec(), vec![]);
+        assert!(first_git_commit.parent_ids().collect_vec().is_empty());
 
         // Only non-root commit as parent
         commit.parents = vec![first_id.clone()];
@@ -1908,17 +1963,21 @@ mod tests {
     #[test]
     fn write_tree_conflicts() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store_path = temp_dir.path();
         let git_repo_path = temp_dir.path().join("git");
-        let git_repo = git2::Repository::init(git_repo_path).unwrap();
+        let git_repo = git_init(&git_repo_path);
 
         let backend = GitBackend::init_external(&settings, store_path, git_repo.path()).unwrap();
         let create_tree = |i| {
-            let blob_id = git_repo.blob(b"content {i}").unwrap();
-            let mut tree_builder = git_repo.treebuilder(None).unwrap();
+            let blob_id = git_repo.write_blob(format!("content {i}")).unwrap();
+            let mut tree_builder = git_repo.empty_tree().edit().unwrap();
             tree_builder
-                .insert(format!("file{i}"), blob_id, 0o100644)
+                .upsert(
+                    format!("file{i}"),
+                    gix::object::tree::EntryKind::Blob,
+                    blob_id,
+                )
                 .unwrap();
             TreeId::from_bytes(tree_builder.write().unwrap().as_bytes())
         };
@@ -1948,47 +2007,50 @@ mod tests {
         let read_commit = backend.read_commit(&read_commit_id).block_on().unwrap();
         assert_eq!(read_commit, commit);
         let git_commit = git_repo
-            .find_commit(Oid::from_bytes(read_commit_id.as_bytes()).unwrap())
+            .find_commit(gix::ObjectId::from_bytes_or_panic(
+                read_commit_id.as_bytes(),
+            ))
             .unwrap();
-        let git_tree = git_repo.find_tree(git_commit.tree_id()).unwrap();
+        let git_tree = git_repo.find_tree(git_commit.tree_id().unwrap()).unwrap();
         assert!(git_tree
             .iter()
-            .filter(|entry| entry.name() != Some("README"))
-            .all(|entry| entry.filemode() == 0o040000));
-        let mut iter = git_tree.iter();
+            .map(Result::unwrap)
+            .filter(|entry| entry.filename() != b"README")
+            .all(|entry| entry.mode().0 == 0o040000));
+        let mut iter = git_tree.iter().map(Result::unwrap);
         let entry = iter.next().unwrap();
-        assert_eq!(entry.name(), Some(".jjconflict-base-0"));
+        assert_eq!(entry.filename(), b".jjconflict-base-0");
         assert_eq!(
             entry.id().as_bytes(),
             root_tree.get_remove(0).unwrap().as_bytes()
         );
         let entry = iter.next().unwrap();
-        assert_eq!(entry.name(), Some(".jjconflict-base-1"));
+        assert_eq!(entry.filename(), b".jjconflict-base-1");
         assert_eq!(
             entry.id().as_bytes(),
             root_tree.get_remove(1).unwrap().as_bytes()
         );
         let entry = iter.next().unwrap();
-        assert_eq!(entry.name(), Some(".jjconflict-side-0"));
+        assert_eq!(entry.filename(), b".jjconflict-side-0");
         assert_eq!(
             entry.id().as_bytes(),
             root_tree.get_add(0).unwrap().as_bytes()
         );
         let entry = iter.next().unwrap();
-        assert_eq!(entry.name(), Some(".jjconflict-side-1"));
+        assert_eq!(entry.filename(), b".jjconflict-side-1");
         assert_eq!(
             entry.id().as_bytes(),
             root_tree.get_add(1).unwrap().as_bytes()
         );
         let entry = iter.next().unwrap();
-        assert_eq!(entry.name(), Some(".jjconflict-side-2"));
+        assert_eq!(entry.filename(), b".jjconflict-side-2");
         assert_eq!(
             entry.id().as_bytes(),
             root_tree.get_add(2).unwrap().as_bytes()
         );
         let entry = iter.next().unwrap();
-        assert_eq!(entry.name(), Some("README"));
-        assert_eq!(entry.filemode(), 0o100644);
+        assert_eq!(entry.filename(), b"README");
+        assert_eq!(entry.mode().0, 0o100644);
         assert!(iter.next().is_none());
 
         // When writing a single tree using the new format, it's represented by a
@@ -1998,10 +2060,12 @@ mod tests {
         let read_commit = backend.read_commit(&read_commit_id).block_on().unwrap();
         assert_eq!(read_commit, commit);
         let git_commit = git_repo
-            .find_commit(Oid::from_bytes(read_commit_id.as_bytes()).unwrap())
+            .find_commit(gix::ObjectId::from_bytes_or_panic(
+                read_commit_id.as_bytes(),
+            ))
             .unwrap();
         assert_eq!(
-            MergedTreeId::resolved(TreeId::from_bytes(git_commit.tree_id().as_bytes())),
+            MergedTreeId::resolved(TreeId::from_bytes(git_commit.tree_id().unwrap().as_bytes())),
             commit.root_tree
         );
     }
@@ -2009,9 +2073,9 @@ mod tests {
     #[test]
     fn commit_has_ref() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let backend = GitBackend::init_internal(&settings, temp_dir.path()).unwrap();
-        let git_repo = backend.open_git_repo().unwrap();
+        let git_repo = backend.git_repo();
         let signature = Signature {
             name: "Someone".to_string(),
             email: "someone@example.com".to_string(),
@@ -2031,71 +2095,72 @@ mod tests {
             secure_sig: None,
         };
         let commit_id = backend.write_commit(commit, None).block_on().unwrap().0;
-        let git_refs: Vec<_> = git_repo
-            .references_glob("refs/jj/keep/*")
+        let git_refs = git_repo.references().unwrap();
+        let git_ref_ids: Vec<_> = git_refs
+            .prefixed("refs/jj/keep/")
             .unwrap()
-            .try_collect()
-            .unwrap();
-        assert!(git_refs
-            .iter()
-            .any(|git_ref| git_ref.target().unwrap() == git_id(&commit_id)));
+            .map(|x| x.unwrap().id().detach())
+            .collect();
+        assert!(git_ref_ids.iter().any(|id| *id == git_id(&commit_id)));
 
         // Concurrently-running GC deletes the ref, leaving the extra metadata.
-        for mut git_ref in git_refs {
-            git_ref.delete().unwrap();
+        for git_ref in git_refs.prefixed("refs/jj/keep/").unwrap() {
+            git_ref.unwrap().delete().unwrap();
         }
         // Re-imported commit should have new ref.
         backend.import_head_commits([&commit_id]).unwrap();
-        let git_refs: Vec<_> = git_repo
-            .references_glob("refs/jj/keep/*")
+        let git_refs = git_repo.references().unwrap();
+        let git_ref_ids: Vec<_> = git_refs
+            .prefixed("refs/jj/keep/")
             .unwrap()
-            .try_collect()
-            .unwrap();
-        assert!(git_refs
-            .iter()
-            .any(|git_ref| git_ref.target().unwrap() == git_id(&commit_id)));
+            .map(|x| x.unwrap().id().detach())
+            .collect();
+        assert!(git_ref_ids.iter().any(|id| *id == git_id(&commit_id)));
     }
 
     #[test]
     fn import_head_commits_duplicates() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let backend = GitBackend::init_internal(&settings, temp_dir.path()).unwrap();
-        let git_repo = backend.open_git_repo().unwrap();
+        let git_repo = backend.git_repo();
 
-        let signature = git2::Signature::now("Someone", "someone@example.com").unwrap();
-        let empty_tree_id = Oid::from_str("4b825dc642cb6eb9a060e54bf8d69288fbee4904").unwrap();
-        let empty_tree = git_repo.find_tree(empty_tree_id).unwrap();
+        let signature = gix::actor::Signature {
+            name: GIT_USER.into(),
+            email: GIT_EMAIL.into(),
+            time: gix::date::Time::now_utc(),
+        };
+        let empty_tree_id =
+            gix::ObjectId::from_hex(b"4b825dc642cb6eb9a060e54bf8d69288fbee4904").unwrap();
         let git_commit_id = git_repo
-            .commit(
-                Some("refs/heads/main"),
+            .commit_as(
                 &signature,
                 &signature,
+                "refs/heads/main",
                 "git commit message",
-                &empty_tree,
-                &[],
+                empty_tree_id,
+                [] as [gix::ObjectId; 0],
             )
-            .unwrap();
+            .unwrap()
+            .detach();
         let commit_id = CommitId::from_bytes(git_commit_id.as_bytes());
 
         // Ref creation shouldn't fail because of duplicated head ids.
         backend
             .import_head_commits([&commit_id, &commit_id])
             .unwrap();
-        let git_refs: Vec<_> = git_repo
-            .references_glob("refs/jj/keep/*")
+        assert!(git_repo
+            .references()
             .unwrap()
-            .try_collect()
-            .unwrap();
-        assert!(git_refs
-            .iter()
-            .any(|git_ref| git_ref.target().unwrap() == git_commit_id));
+            .prefixed("refs/jj/keep/")
+            .unwrap()
+            .any(|git_ref| git_ref.unwrap().id().detach() == git_commit_id));
     }
 
     #[test]
     fn overlapping_git_commit_id() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let backend = GitBackend::init_internal(&settings, temp_dir.path()).unwrap();
         let mut commit1 = Commit {
             parents: vec![backend.root_commit_id().clone()],
@@ -2140,7 +2205,7 @@ mod tests {
     #[test]
     fn write_signed_commit() {
         let settings = user_settings();
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let backend = GitBackend::init_internal(&settings, temp_dir.path()).unwrap();
 
         let commit = Commit {
@@ -2156,7 +2221,7 @@ mod tests {
 
         let mut signer = |data: &_| {
             let hash: String = blake2b_hash(data).encode_hex();
-            Ok(format!("test sig\n\n\nhash={hash}\n").into_bytes())
+            Ok(format!("test sig\nhash={hash}\n").into_bytes())
         };
 
         let (id, commit) = backend
@@ -2166,19 +2231,17 @@ mod tests {
 
         let git_repo = backend.git_repo();
         let obj = git_repo
-            .find_object(gix::ObjectId::try_from(id.as_bytes()).unwrap())
+            .find_object(gix::ObjectId::from_bytes_or_panic(id.as_bytes()))
             .unwrap();
-        insta::assert_snapshot!(std::str::from_utf8(&obj.data).unwrap(), @r###"
+        insta::assert_snapshot!(std::str::from_utf8(&obj.data).unwrap(), @r"
         tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904
         author Someone <someone@example.com> 0 +0000
         committer Someone <someone@example.com> 0 +0000
         gpgsig test sig
-         
-         
          hash=9ad9526c3b2103c41a229f2f3c82d107a0ecd902f476a855f0e1dd5f7bef1430663de12749b73e293a877113895a8a2a0f29da4bbc5a5f9a19c3523fb0e53518
 
         initial
-        "###);
+        ");
 
         let returned_sig = commit.secure_sig.expect("failed to return the signature");
 
@@ -2187,29 +2250,27 @@ mod tests {
         let sig = commit.secure_sig.expect("failed to read the signature");
         assert_eq!(&sig, &returned_sig);
 
-        insta::assert_snapshot!(std::str::from_utf8(&sig.sig).unwrap(), @r###"
+        insta::assert_snapshot!(std::str::from_utf8(&sig.sig).unwrap(), @r"
         test sig
-
-
         hash=9ad9526c3b2103c41a229f2f3c82d107a0ecd902f476a855f0e1dd5f7bef1430663de12749b73e293a877113895a8a2a0f29da4bbc5a5f9a19c3523fb0e53518
-        "###);
-        insta::assert_snapshot!(std::str::from_utf8(&sig.data).unwrap(), @r###"
+        ");
+        insta::assert_snapshot!(std::str::from_utf8(&sig.data).unwrap(), @r"
         tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904
         author Someone <someone@example.com> 0 +0000
         committer Someone <someone@example.com> 0 +0000
 
         initial
-        "###);
+        ");
     }
 
-    fn git_id(commit_id: &CommitId) -> Oid {
-        Oid::from_bytes(commit_id.as_bytes()).unwrap()
+    fn git_id(commit_id: &CommitId) -> gix::ObjectId {
+        gix::ObjectId::from_bytes_or_panic(commit_id.as_bytes())
     }
 
     fn create_signature() -> Signature {
         Signature {
-            name: "Someone".to_string(),
-            email: "someone@example.com".to_string(),
+            name: GIT_USER.to_string(),
+            email: GIT_EMAIL.to_string(),
             timestamp: Timestamp {
                 timestamp: MillisSinceEpoch(0),
                 tz_offset: 0,
