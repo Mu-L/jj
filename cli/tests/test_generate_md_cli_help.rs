@@ -25,8 +25,13 @@ const PREAMBLE: &str = r#"
 fn test_generate_markdown_docs_in_docs_dir() {
     let test_env = TestEnvironment::default();
     let mut markdown_help = PREAMBLE.to_string();
-    markdown_help
-        .push_str(&test_env.jj_cmd_success(test_env.env_root(), &["util", "markdown-help"]));
+    markdown_help.push_str(
+        test_env
+            .run_jj_in(".", ["util", "markdown-help"])
+            .success()
+            .stdout
+            .raw(),
+    );
 
     insta::with_settings!({
         snapshot_path => ".",

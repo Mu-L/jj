@@ -60,7 +60,6 @@ This document contains the help content for the `jj` command-line program.
 * [`jj git remote rename`↴](#jj-git-remote-rename)
 * [`jj git remote set-url`↴](#jj-git-remote-set-url)
 * [`jj help`↴](#jj-help)
-* [`jj init`↴](#jj-init)
 * [`jj interdiff`↴](#jj-interdiff)
 * [`jj log`↴](#jj-log)
 * [`jj new`↴](#jj-new)
@@ -79,6 +78,7 @@ This document contains the help content for the `jj` command-line program.
 * [`jj restore`↴](#jj-restore)
 * [`jj root`↴](#jj-root)
 * [`jj show`↴](#jj-show)
+* [`jj sign`↴](#jj-sign)
 * [`jj simplify-parents`↴](#jj-simplify-parents)
 * [`jj sparse`↴](#jj-sparse)
 * [`jj sparse edit`↴](#jj-sparse-edit)
@@ -98,6 +98,7 @@ This document contains the help content for the `jj` command-line program.
 * [`jj util install-man-pages`↴](#jj-util-install-man-pages)
 * [`jj util markdown-help`↴](#jj-util-markdown-help)
 * [`jj undo`↴](#jj-undo)
+* [`jj unsign`↴](#jj-unsign)
 * [`jj version`↴](#jj-version)
 * [`jj workspace`↴](#jj-workspace)
 * [`jj workspace add`↴](#jj-workspace-add)
@@ -111,7 +112,9 @@ This document contains the help content for the `jj` command-line program.
 
 Jujutsu (An experimental VCS)
 
-To get started, see the tutorial at https://jj-vcs.github.io/jj/latest/tutorial/.
+To get started, see the tutorial [`jj help -k tutorial`].
+
+[`jj help -k tutorial`]: https://jj-vcs.github.io/jj/latest/tutorial/
 
 **Usage:** `jj [OPTIONS] [COMMAND]`
 
@@ -122,7 +125,7 @@ To get started, see the tutorial at https://jj-vcs.github.io/jj/latest/tutorial/
 
 * `abandon` — Abandon a revision
 * `absorb` — Move changes from a revision into the stack of mutable revisions
-* `backout` — Apply the reverse of a revision on top of another revision
+* `backout` — Apply the reverse of given revisions on top of another revision
 * `bookmark` — Manage bookmarks [default alias: b]
 * `commit` — Update the description and create a new change on top
 * `config` — Manage config options
@@ -136,7 +139,6 @@ To get started, see the tutorial at https://jj-vcs.github.io/jj/latest/tutorial/
 * `fix` — Update files with formatting fixes or other changes
 * `git` — Commands for working with Git remotes and the underlying Git repo
 * `help` — Print this message or the help of the given subcommand(s)
-* `init` — Create a new repo in the given directory
 * `interdiff` — Compare the changes of two commits
 * `log` — Show revision history
 * `new` — Create a new, empty change and (by default) edit it in the working copy
@@ -149,6 +151,7 @@ To get started, see the tutorial at https://jj-vcs.github.io/jj/latest/tutorial/
 * `restore` — Restore paths from another revision
 * `root` — Show the current workspace root directory
 * `show` — Show commit description and changes in a revision
+* `sign` — Cryptographically sign a revision
 * `simplify-parents` — Simplify parent edges for the specified revision(s)
 * `sparse` — Manage which paths from the working-copy commit are present in the working copy
 * `split` — Split a revision in two
@@ -157,6 +160,7 @@ To get started, see the tutorial at https://jj-vcs.github.io/jj/latest/tutorial/
 * `tag` — Manage tags
 * `util` — Infrequently used commands such as for generating shell completions
 * `undo` — Undo an operation (shortcut for `jj op undo`)
+* `unsign` — Drop a cryptographic signature
 * `version` — Display version information
 * `workspace` — Commands for working with workspaces
 
@@ -259,7 +263,9 @@ The modification made by `jj absorb` can be reviewed by `jj op show -p`.
 
 ## `jj backout`
 
-Apply the reverse of a revision on top of another revision
+Apply the reverse of given revisions on top of another revision
+
+The description of the new revisions can be customized with the `templates.backout_description` config variable.
 
 **Usage:** `jj backout [OPTIONS]`
 
@@ -278,9 +284,9 @@ Apply the reverse of a revision on top of another revision
 
 Manage bookmarks [default alias: b]
 
-See the [bookmark documentation] for more information.
+See [`jj help -k bookmarks`] for more information.
 
-[bookmark documentation]: https://jj-vcs.github.io/jj/latest/bookmarks
+[`jj help -k bookmarks`]: https://jj-vcs.github.io/jj/latest/bookmarks
 
 **Usage:** `jj bookmark <COMMAND>`
 
@@ -288,7 +294,7 @@ See the [bookmark documentation] for more information.
 
 * `create` — Create a new bookmark
 * `delete` — Delete an existing bookmark and propagate the deletion to remotes on the next push
-* `forget` — Forget everything about a bookmark, including its local and remote targets
+* `forget` — Forget a bookmark without marking it as a deletion to be pushed
 * `list` — List bookmarks and their targets
 * `move` — Move existing bookmarks to target revision
 * `rename` — Rename `old` bookmark name to `new` bookmark name
@@ -320,6 +326,8 @@ Delete an existing bookmark and propagate the deletion to remotes on the next pu
 
 Revisions referred to by the deleted bookmarks are not abandoned. To delete revisions as well as bookmarks, use `jj abandon`. For example, `jj abandon main..<bookmark>` will abandon revisions belonging to the `<bookmark>` branch (relative to the `main` branch.)
 
+If you don't want the deletion of the local bookmark to propagate to any tracked remote bookmarks, use `jj bookmark forget` instead.
+
 **Usage:** `jj bookmark delete <NAMES>...`
 
 ###### **Arguments:**
@@ -334,11 +342,11 @@ Revisions referred to by the deleted bookmarks are not abandoned. To delete revi
 
 ## `jj bookmark forget`
 
-Forget everything about a bookmark, including its local and remote targets
+Forget a bookmark without marking it as a deletion to be pushed
 
-A forgotten bookmark will not impact remotes on future pushes. It will be recreated on future pulls if it still exists in the remote.
+If a local bookmark is forgotten, any corresponding remote bookmarks will become untracked to ensure that the forgotten bookmark will not impact remotes on future pushes.
 
-**Usage:** `jj bookmark forget <NAMES>...`
+**Usage:** `jj bookmark forget [OPTIONS] <NAMES>...`
 
 ###### **Arguments:**
 
@@ -348,6 +356,12 @@ A forgotten bookmark will not impact remotes on future pushes. It will be recrea
 
    [wildcard pattern]: https://jj-vcs.github.io/jj/latest/revsets/#string-patterns
 
+###### **Options:**
+
+* `--include-remotes` — When forgetting a local bookmark, also forget any corresponding remote bookmarks
+
+   A forgotten remote bookmark will not impact remotes on future pushes. It will be recreated on future fetches if it still exists on the remote. If there is a corresponding Git-tracking remote bookmark, it will also be forgotten.
+
 
 
 ## `jj bookmark list`
@@ -356,9 +370,9 @@ List bookmarks and their targets
 
 By default, a tracking remote bookmark will be included only if its target is different from the local target. A non-tracking remote bookmark won't be listed. For a conflicted bookmark (both local and remote), old target revisions are preceded by a "-" and new target revisions are preceded by a "+".
 
-See the [bookmark documentation] for more information.
+See [`jj help -k bookmarks`] for more information.
 
-[bookmark documentation]: https://jj-vcs.github.io/jj/latest/bookmarks
+[`jj help -k bookmarks`]: https://jj-vcs.github.io/jj/latest/bookmarks
 
 **Usage:** `jj bookmark list [OPTIONS] [NAMES]...`
 
@@ -387,11 +401,11 @@ See the [bookmark documentation] for more information.
    Note that `-r deleted_bookmark` will not work since `deleted_bookmark` wouldn't have a local target.
 * `-T`, `--template <TEMPLATE>` — Render each bookmark using the given template
 
-   All 0-argument methods of the [`RefName` type] are available as keywords in the [template expression].
-
-   [template expression]: https://jj-vcs.github.io/jj/latest/templates/
+   All 0-argument methods of the [`RefName` type] are available as keywords in the template expression. See [`jj help -k templates`] for more information.
 
    [`RefName` type]: https://jj-vcs.github.io/jj/latest/templates/#refname-type
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
 
 
 
@@ -419,10 +433,8 @@ $ jj bookmark move --from 'heads(::@- & bookmarks())' --to @-
 
 ###### **Options:**
 
-* `--from <REVSETS>` — Move bookmarks from the given revisions
-* `--to <REVSET>` — Move bookmarks to this revision
-
-  Default value: `@`
+* `-f`, `--from <REVSETS>` — Move bookmarks from the given revisions
+* `-t`, `--to <REVSET>` — Move bookmarks to this revision
 * `-B`, `--allow-backwards` — Allow moving bookmarks backwards or sideways
 
 
@@ -485,6 +497,8 @@ Stop tracking given remote bookmarks
 
 A non-tracking remote bookmark is just a pointer to the last-fetched remote bookmark. It won't be imported as a local bookmark on future pulls.
 
+If you want to forget a local bookmark while also untracking the corresponding remote bookmarks, use `jj bookmark forget` instead.
+
 **Usage:** `jj bookmark untrack <BOOKMARK@REMOTE>...`
 
 ###### **Arguments:**
@@ -533,9 +547,9 @@ Manage config options
 
 Operates on jj configuration, which comes from the config file and environment variables.
 
-See the [config documentation] for file locations, supported config options, and other details about `jj config`.
+See [`jj help -k config`] to know more about file locations, supported config options, and other details about `jj config`.
 
-[config documentation]: https://jj-vcs.github.io/jj/latest/config/
+[`jj help -k config`]: https://jj-vcs.github.io/jj/latest/config/
 
 **Usage:** `jj config <COMMAND>`
 
@@ -603,13 +617,15 @@ List variables set in config file, along with their values
 * `--repo` — Target the repo-level config
 * `-T`, `--template <TEMPLATE>` — Render each variable using the given template
 
-   The following keywords are available in the [template expression]:
+   The following keywords are available in the template expression:
 
    * `name: String`: Config name.
    * `value: ConfigValue`: Value to be formatted in TOML syntax.
    * `overridden: Boolean`: True if the value is shadowed by other.
 
-   [template expression]:
+   See [`jj help -k templates`] for more information.
+
+   [`jj help -k templates`]:
        https://jj-vcs.github.io/jj/latest/templates/
 
 
@@ -841,11 +857,11 @@ Lists the previous commits which a change has pointed to. The current commit of 
 
    Run `jj log -T` to list the built-in templates.
 
-   You can also specify arbitrary [template expressions] using the [built-in keywords].
-
-   [template expression]: https://jj-vcs.github.io/jj/latest/templates/
+   You can also specify arbitrary template expressions using the [built-in keywords]. See [`jj help -k templates`] for more information.
 
    [built-in keywords]: https://jj-vcs.github.io/jj/latest/templates/#commit-keywords
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
 * `-p`, `--patch` — Show patch compared to the previous version of this change
 
    If the previous version has different parents, it will be temporarily rebased to the parents of the new version, so the diff is not contaminated by unrelated changes.
@@ -887,7 +903,7 @@ File operations
 
 Show the source change for each line of the target file.
 
-Annotates a revision line by line. Each line includes the source change that introduced the associated line. A path to the desired file must be provided. The per-line prefix for each line can be customized via template with the `templates.annotate_commit_summary` config variable.
+Annotates a revision line by line. Each line includes the source change that introduced the associated line. A path to the desired file must be provided.
 
 **Usage:** `jj file annotate [OPTIONS] <PATH>`
 
@@ -898,6 +914,15 @@ Annotates a revision line by line. Each line includes the source change that int
 ###### **Options:**
 
 * `-r`, `--revision <REVSET>` — an optional revision to start at
+* `-T`, `--template <TEMPLATE>` — Render each line using the given template
+
+   All 0-argument methods of the [`AnnotationLine` type] are available as keywords in the template expression. See [`jj help -k templates`] for more information.
+
+   If not specified, this defaults to the `templates.file_annotate` setting.
+
+   [`AnnotationLine` type]: https://jj-vcs.github.io/jj/latest/templates/#annotationline-type
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
 
 
 
@@ -946,11 +971,11 @@ List files in a revision
   Default value: `@`
 * `-T`, `--template <TEMPLATE>` — Render each file entry using the given template
 
-   All 0-argument methods of the [`TreeEntry` type] are available as keywords in the [template expression].
-
-   [template expression]: https://jj-vcs.github.io/jj/latest/templates/
+   All 0-argument methods of the [`TreeEntry` type] are available as keywords in the template expression. See [`jj help -k templates`] for more information.
 
    [`TreeEntry` type]: https://jj-vcs.github.io/jj/latest/templates/#treeentry-type
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
 
 
 
@@ -1149,6 +1174,10 @@ If a working-copy commit gets abandoned, it will be given a new, empty commit. T
 * `--remote <REMOTE>` — The remote to fetch from (only named remotes are supported, can be repeated)
 
    This defaults to the `git.fetch` setting. If that is not configured, and if there are multiple remotes, the remote named "origin" will be used.
+
+   By default, the specified remote names matches exactly. Use a [string pattern], e.g. `--remote 'glob:*'`, to select remotes using patterns.
+
+   [string pattern]: https://jj-vcs.github.io/jj/latest/revsets#string-patterns
 * `--all-remotes` — Fetch from all remotes
 
 
@@ -1358,22 +1387,6 @@ Print this message or the help of the given subcommand(s)
 
 
 
-## `jj init`
-
-Create a new repo in the given directory
-
-If the given directory does not exist, it will be created. If no directory is given, the current directory is used.
-
-**Usage:** `jj init [DESTINATION]`
-
-###### **Arguments:**
-
-* `<DESTINATION>` — The destination directory
-
-  Default value: `.`
-
-
-
 ## `jj interdiff`
 
 Compare the changes of two commits
@@ -1443,11 +1456,13 @@ The working-copy commit is indicated by a `@` symbol in the graph. [Immutable re
 
    Run `jj log -T` to list the built-in templates.
 
-   You can also specify arbitrary [template expressions] using the [built-in keywords].
+   You can also specify arbitrary template expressions using the [built-in keywords]. See [`jj help -k templates`] for more information.
 
    If not specified, this defaults to the `templates.log` setting.
 
-   [template expression]: https://jj-vcs.github.io/jj/latest/templates/ [built-in keywords]: https://jj-vcs.github.io/jj/latest/templates/#commit-keywords
+   [built-in keywords]: https://jj-vcs.github.io/jj/latest/templates/#commit-keywords
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
 * `-p`, `--patch` — Show patch
 * `-s`, `--summary` — For each path, show only whether it was modified, added, or deleted
 * `--stat` — Show a histogram of the changes
@@ -1632,12 +1647,12 @@ Like other commands, `jj op log` snapshots the current working-copy changes and 
 * `--no-graph` — Don't show the graph, show a flat list of operations
 * `-T`, `--template <TEMPLATE>` — Render each operation using the given template
 
-   You can specify arbitrary [template expressions] using the [built-in keywords].
-
-   [template expression]: https://jj-vcs.github.io/jj/latest/templates/
+   You can specify arbitrary template expressions using the [built-in keywords]. See [`jj help -k templates`] for more information.
 
    [built-in keywords]: https://jj-vcs.github.io/jj/latest/templates/#operation-keywords
-* `--op-diff` — Show changes to the repository at each operation
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
+* `-d`, `--op-diff` — Show changes to the repository at each operation
 * `-p`, `--patch` — Show patch of modifications to changes (implies --op-diff)
 
    If the previous version has different parents, it will be temporarily rebased to the parents of the new version, so the diff is not contaminated by unrelated changes.
@@ -2136,7 +2151,7 @@ See `jj diffedit` if you'd like to restore portions of files rather than entire 
 ###### **Options:**
 
 * `-f`, `--from <REVSET>` — Revision to restore from (source)
-* `-t`, `--into <REVSETS>` — Revision to restore into (destination)
+* `-t`, `--into <REVSET>` — Revision to restore into (destination)
 * `-c`, `--changes-in <REVSET>` — Undo the changes in a revision as compared to the merge of its parents.
 
    This undoes the changes that can be seen with `jj diff -r REVSET`. If `REVSET` only has a single parent, this option is equivalent to `jj restore --into REVSET --from REVSET-`.
@@ -2172,11 +2187,11 @@ Show commit description and changes in a revision
 
 * `-T`, `--template <TEMPLATE>` — Render a revision using the given template
 
-   You can specify arbitrary [template expressions] using the [built-in keywords].
-
-   [template expression]: https://jj-vcs.github.io/jj/latest/templates/
+   You can specify arbitrary template expressions using the [built-in keywords]. See [`jj help -k templates`] for more information.
 
    [built-in keywords]: https://jj-vcs.github.io/jj/latest/templates/#commit-keywords
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
 * `-s`, `--summary` — For each path, show only whether it was modified, added, or deleted
 * `--stat` — Show a histogram of the changes
 * `--types` — For each path, show only its type before and after
@@ -2191,6 +2206,31 @@ Show commit description and changes in a revision
 * `--context <CONTEXT>` — Number of lines of context to show
 * `--ignore-all-space` — Ignore whitespace when comparing lines
 * `--ignore-space-change` — Ignore changes in amount of whitespace when comparing lines
+
+
+
+## `jj sign`
+
+Cryptographically sign a revision
+
+This command requires configuring a [commit signing] backend.
+
+[commit signing]: https://jj-vcs.github.io/jj/latest/config/#commit-signing
+
+**Usage:** `jj sign [OPTIONS]`
+
+###### **Options:**
+
+* `-r`, `--revisions <REVSETS>` — What revision(s) to sign
+
+   If no revisions are specified, this defaults to the `revsets.sign` setting.
+
+   Note that revisions are always re-signed.
+
+   While that leads to discomfort for users, which sign with hardware devices, as of now we cannot reliably check if a commit is already signed by the user without creating a signature (see [#5786]).
+
+   [#5786]: https://github.com/jj-vcs/jj/issues/5786
+* `--key <KEY>` — The key used for signing
 
 
 
@@ -2382,11 +2422,11 @@ List tags
 
 * `-T`, `--template <TEMPLATE>` — Render each tag using the given template
 
-   All 0-argument methods of the [`RefName` type] are available as keywords in the [template expression].
-
-   [template expression]: https://jj-vcs.github.io/jj/latest/templates/
+   All 0-argument methods of the [`RefName` type] are available as keywords in the template expression. See [`jj help -k templates`] for more information.
 
    [`RefName` type]: https://jj-vcs.github.io/jj/latest/templates/#refname-type
+
+   [`jj help -k templates`]: https://jj-vcs.github.io/jj/latest/templates/
 
 
 
@@ -2567,6 +2607,22 @@ Undo an operation (shortcut for `jj op undo`)
   - `remote-tracking`:
     The remote-tracking bookmarks. Do not restore these if you'd like to push after the undo
 
+
+
+
+## `jj unsign`
+
+Drop a cryptographic signature
+
+See also [commit signing] docs.
+
+[commit signing]: https://jj-vcs.github.io/jj/latest/config/#commit-signing
+
+**Usage:** `jj unsign [OPTIONS]`
+
+###### **Options:**
+
+* `-r`, `--revisions <REVSETS>` — What revision(s) to unsign
 
 
 

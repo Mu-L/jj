@@ -128,7 +128,7 @@ impl<'repo> RevsetExpressionEvaluator<'repo> {
     pub fn evaluate_to_commits(
         &self,
     ) -> Result<
-        impl Iterator<Item = Result<Commit, RevsetEvaluationError>> + 'repo,
+        impl Iterator<Item = Result<Commit, RevsetEvaluationError>> + use<'repo>,
         UserRevsetEvaluationError,
     > {
         Ok(self.evaluate()?.iter().commits(self.repo.store()))
@@ -351,4 +351,19 @@ fn format_multiple_revisions_error(
         }
     };
     cmd_err
+}
+
+#[derive(Debug, Error)]
+#[error("Failed to parse bookmark name: {}", source.kind())]
+pub struct BookmarkNameParseError {
+    pub input: String,
+    pub source: RevsetParseError,
+}
+
+/// Parses bookmark name specified in revset syntax.
+pub fn parse_bookmark_name(text: &str) -> Result<String, BookmarkNameParseError> {
+    revset::parse_symbol(text).map_err(|source| BookmarkNameParseError {
+        input: text.to_owned(),
+        source,
+    })
 }

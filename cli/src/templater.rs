@@ -20,6 +20,8 @@ use std::io::Write;
 use std::iter;
 use std::rc::Rc;
 
+use bstr::BStr;
+use bstr::BString;
 use jj_lib::backend::Signature;
 use jj_lib::backend::Timestamp;
 use jj_lib::config::ConfigValue;
@@ -66,6 +68,18 @@ impl<T: Template + ?Sized> Template for Box<T> {
 impl<T: Template> Template for Option<T> {
     fn format(&self, formatter: &mut TemplateFormatter) -> io::Result<()> {
         self.as_ref().map_or(Ok(()), |t| t.format(formatter))
+    }
+}
+
+impl Template for BString {
+    fn format(&self, formatter: &mut TemplateFormatter) -> io::Result<()> {
+        formatter.as_mut().write_all(self)
+    }
+}
+
+impl Template for &BStr {
+    fn format(&self, formatter: &mut TemplateFormatter) -> io::Result<()> {
+        formatter.as_mut().write_all(self)
     }
 }
 
@@ -733,7 +747,7 @@ impl<'a> TemplateFormatter<'a> {
     ///
     /// This does not borrow `self` so the underlying formatter can be mutably
     /// borrowed.
-    pub fn rewrap_fn(&self) -> impl Fn(&mut dyn Formatter) -> TemplateFormatter<'_> {
+    pub fn rewrap_fn(&self) -> impl Fn(&mut dyn Formatter) -> TemplateFormatter<'_> + use<> {
         let error_handler = self.error_handler;
         move |formatter| TemplateFormatter::new(formatter, error_handler)
     }
@@ -865,7 +879,10 @@ fn propagate_property_error(
 /// This inherits the error handling strategy from the given `formatter`.
 fn record_non_empty_fn<T: Template + ?Sized>(
     formatter: &TemplateFormatter,
-) -> impl Fn(&T) -> Option<io::Result<FormatRecorder>> {
+    // TODO: T doesn't have to be captured, but "currently, all type parameters
+    // are required to be mentioned in the precise captures list" as of rustc
+    // 1.85.0.
+) -> impl Fn(&T) -> Option<io::Result<FormatRecorder>> + use<T> {
     let rewrap = formatter.rewrap_fn();
     move |template| {
         let mut recorder = FormatRecorder::new();

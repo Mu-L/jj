@@ -20,6 +20,7 @@ use std::path::Path;
 
 use jj_lib::git;
 use jj_lib::git::GitFetch;
+use jj_lib::refs::RemoteRefSymbol;
 use jj_lib::repo::Repo;
 use jj_lib::str_util::StringPattern;
 use jj_lib::workspace::Workspace;
@@ -33,7 +34,6 @@ use crate::command_error::user_error_with_message;
 use crate::command_error::CommandError;
 use crate::commands::git::maybe_add_gitignore;
 use crate::git_util::absolute_git_url;
-use crate::git_util::get_git_repo;
 use crate::git_util::print_git_import_stats;
 use crate::git_util::with_remote_git_callbacks;
 use crate::ui::Ui;
@@ -46,7 +46,7 @@ pub struct GitCloneArgs {
     /// URL or path of the Git repo to clone
     ///
     /// Local path will be resolved to absolute form.
-    #[arg(value_hint = clap::ValueHint::DirPath)]
+    #[arg(value_hint = clap::ValueHint::Url)]
     source: String,
     /// Specifies the target directory for the Jujutsu repository clone.
     /// If not provided, defaults to a directory named after the last component
@@ -144,24 +144,21 @@ pub fn cmd_git_clone(
     }
 
     let (mut workspace_command, default_branch) = clone_result?;
-    if let Some(default_branch) = &default_branch {
-        write_repository_level_trunk_alias(
-            ui,
-            workspace_command.repo_path(),
-            remote_name,
-            default_branch,
-        )?;
+    if let Some(name) = &default_branch {
+        let default_symbol = RemoteRefSymbol {
+            name,
+            remote: remote_name,
+        };
+        write_repository_level_trunk_alias(ui, workspace_command.repo_path(), default_symbol)?;
 
         let default_branch_remote_ref = workspace_command
             .repo()
             .view()
-            .get_remote_bookmark(default_branch, remote_name);
+            .get_remote_bookmark(default_symbol);
         if let Some(commit_id) = default_branch_remote_ref.target.as_normal().cloned() {
             let mut checkout_tx = workspace_command.start_transaction();
             // For convenience, create local bookmark as Git would do.
-            checkout_tx
-                .repo_mut()
-                .track_remote_bookmark(default_branch, remote_name);
+            checkout_tx.repo_mut().track_remote_bookmark(default_symbol);
             if let Ok(commit) = checkout_tx.repo().store().get_commit(&commit_id) {
                 checkout_tx.check_out(&commit)?;
             }
@@ -195,8 +192,7 @@ fn configure_remote(
     remote_name: &str,
     source: &str,
 ) -> Result<WorkspaceCommandHelper, CommandError> {
-    let git_repo = get_git_repo(workspace_command.repo().store())?;
-    git::add_remote(&git_repo, remote_name, source)?;
+    git::add_remote(workspace_command.repo().store(), remote_name, source)?;
     // Reload workspace to apply new remote configuration to
     // gix::ThreadSafeRepository behind the store.
     let workspace = command.load_workspace_at(

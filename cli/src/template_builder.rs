@@ -845,6 +845,30 @@ fn builtin_string_methods<'a, L: TemplateLanguage<'a> + ?Sized>(
         },
     );
     map.insert(
+        "trim",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| s.trim().to_owned());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
+        "trim_start",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| s.trim_start().to_owned());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
+        "trim_end",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| s.trim_end().to_owned());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
         "substr",
         |language, diagnostics, build_ctx, self_property, function| {
             let [start_idx, end_idx] = function.expect_exact_arguments()?;
@@ -892,6 +916,14 @@ fn builtin_string_methods<'a, L: TemplateLanguage<'a> + ?Sized>(
         |_language, _diagnostics, _build_ctx, self_property, function| {
             function.expect_no_arguments()?;
             let out_property = self_property.map(|s| s.to_lowercase());
+            Ok(L::wrap_string(out_property))
+        },
+    );
+    map.insert(
+        "escape_json",
+        |_language, _diagnostics, _build_ctx, self_property, function| {
+            function.expect_no_arguments()?;
+            let out_property = self_property.map(|s| serde_json::to_string(&s).unwrap());
             Ok(L::wrap_string(out_property))
         },
     );
@@ -1545,6 +1577,11 @@ fn builtin_functions<'a, L: TemplateLanguage<'a> + ?Sized>() -> TemplateBuildFun
             ))))
         },
     );
+    map.insert("stringify", |language, diagnostics, build_ctx, function| {
+        let [content_node] = function.expect_exact_arguments()?;
+        let content = expect_plain_text_expression(language, diagnostics, build_ctx, content_node)?;
+        Ok(L::wrap_string(content))
+    });
     map.insert("if", |language, diagnostics, build_ctx, function| {
         let ([condition_node, true_node], [false_node]) = function.expect_arguments()?;
         let condition =
@@ -2015,7 +2052,10 @@ mod tests {
         }
     }
 
-    fn new_error_property<O>(message: &str) -> impl TemplateProperty<Output = O> + '_ {
+    // TODO: O doesn't have to be captured, but "currently, all type parameters
+    // are required to be mentioned in the precise captures list" as of rustc
+    // 1.85.0.
+    fn new_error_property<O>(message: &str) -> impl TemplateProperty<Output = O> + use<'_, O> {
         Literal(()).and_then(|()| Err(TemplatePropertyError(message.into())))
     }
 
@@ -2069,14 +2109,14 @@ mod tests {
         env.add_keyword("description", || L::wrap_string(Literal("".to_owned())));
         env.add_keyword("empty", || L::wrap_boolean(Literal(true)));
 
-        insta::assert_snapshot!(env.parse_err(r#"description ()"#), @r#"
+        insta::assert_snapshot!(env.parse_err(r#"description ()"#), @r"
          --> 1:13
           |
         1 | description ()
           |             ^---
           |
           = expected <EOI>, `++`, `||`, `&&`, `==`, `!=`, `>=`, `>`, `<=`, or `<`
-        "#);
+        ");
 
         insta::assert_snapshot!(env.parse_err(r#"foo"#), @r"
          --> 1:1
@@ -2095,14 +2135,14 @@ mod tests {
           |
           = Function `foo` doesn't exist
         ");
-        insta::assert_snapshot!(env.parse_err(r#"false()"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#"false()"#), @r"
          --> 1:1
           |
         1 | false()
           | ^---^
           |
           = Expected identifier
-        "###);
+        ");
 
         insta::assert_snapshot!(env.parse_err(r#"!foo"#), @r"
          --> 1:2
@@ -2194,14 +2234,14 @@ mod tests {
           = Method `foo` doesn't exist for type `String`
         ");
 
-        insta::assert_snapshot!(env.parse_err(r#"10000000000000000000"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#"10000000000000000000"#), @r"
          --> 1:1
           |
         1 | 10000000000000000000
           | ^------------------^
           |
           = Invalid integer literal
-        "###);
+        ");
         insta::assert_snapshot!(env.parse_err(r#"42.foo()"#), @r"
          --> 1:4
           |
@@ -2298,14 +2338,14 @@ mod tests {
           = Expected expression of type `Boolean`, but actual type is `Template`
         "#);
 
-        insta::assert_snapshot!(env.parse_err(r#"|x| description"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#"|x| description"#), @r"
          --> 1:1
           |
         1 | |x| description
           | ^-------------^
           |
           = Lambda cannot be defined here
-        "###);
+        ");
     }
 
     #[test]
@@ -2507,7 +2547,7 @@ mod tests {
             @"ax,ay;bx,by;cx,cy");
         // Nested string operations
         insta::assert_snapshot!(
-            env.render_ok(r#""!a\n!b\nc\nend".remove_suffix("end").lines().map(|s| s.remove_prefix("!"))"#),
+            env.render_ok(r#""!  a\n!b\nc\n   end".remove_suffix("end").trim_end().lines().map(|s| s.remove_prefix("!").trim_start())"#),
             @"a b c");
 
         // Lambda expression in alias
@@ -2515,31 +2555,31 @@ mod tests {
         insta::assert_snapshot!(env.render_ok(r#""a\nb\nc".lines().map(identity)"#), @"a b c");
 
         // Not a lambda expression
-        insta::assert_snapshot!(env.parse_err(r#""a".lines().map(empty)"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#""a".lines().map(empty)"#), @r#"
          --> 1:17
           |
         1 | "a".lines().map(empty)
           |                 ^---^
           |
           = Expected lambda expression
-        "###);
+        "#);
         // Bad lambda parameter count
-        insta::assert_snapshot!(env.parse_err(r#""a".lines().map(|| "")"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#""a".lines().map(|| "")"#), @r#"
          --> 1:18
           |
         1 | "a".lines().map(|| "")
           |                  ^
           |
           = Expected 1 lambda parameters
-        "###);
-        insta::assert_snapshot!(env.parse_err(r#""a".lines().map(|a, b| "")"#), @r###"
+        "#);
+        insta::assert_snapshot!(env.parse_err(r#""a".lines().map(|a, b| "")"#), @r#"
          --> 1:18
           |
         1 | "a".lines().map(|a, b| "")
           |                  ^--^
           |
           = Expected 1 lambda parameters
-        "###);
+        "#);
         // Bad lambda output
         insta::assert_snapshot!(env.parse_err(r#""a".lines().filter(|s| s ++ "\n")"#), @r#"
          --> 1:24
@@ -2634,6 +2674,15 @@ mod tests {
             env.render_ok(r#""bar@other.example.com".remove_suffix("@other.example.com")"#),
             @"bar");
 
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r    \t \r ".trim()"#), @"");
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r foo  bar \t \r ".trim()"#), @"foo  bar");
+
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r    \t \r ".trim_start()"#), @"");
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r foo  bar \t \r ".trim_start()"#), @"foo  bar");
+
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r    \t \r ".trim_end()"#), @"");
+        insta::assert_snapshot!(env.render_ok(r#"" \n \r foo  bar \t \r ".trim_end()"#), @" foo  bar");
+
         insta::assert_snapshot!(env.render_ok(r#""foo".substr(0, 0)"#), @"");
         insta::assert_snapshot!(env.render_ok(r#""foo".substr(0, 1)"#), @"f");
         insta::assert_snapshot!(env.render_ok(r#""foo".substr(0, 3)"#), @"foo");
@@ -2659,6 +2708,9 @@ mod tests {
         // ranges with end > start are empty
         insta::assert_snapshot!(env.render_ok(r#""abcdef".substr(4, 2)"#), @"");
         insta::assert_snapshot!(env.render_ok(r#""abcdef".substr(-2, -4)"#), @"");
+
+        insta::assert_snapshot!(env.render_ok(r#""hello".escape_json()"#), @r#""hello""#);
+        insta::assert_snapshot!(env.render_ok(r#""he \n ll \n \" o".escape_json()"#), @r#""he \n ll \n \" o""#);
     }
 
     #[test]
@@ -2817,34 +2869,34 @@ mod tests {
             @"19700101 00:00:00");
 
         // Invalid format string
-        insta::assert_snapshot!(env.parse_err(r#"t0.format("%_")"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#"t0.format("%_")"#), @r#"
          --> 1:11
           |
         1 | t0.format("%_")
           |           ^--^
           |
           = Invalid time format
-        "###);
+        "#);
 
         // Invalid type
-        insta::assert_snapshot!(env.parse_err(r#"t0.format(0)"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#"t0.format(0)"#), @r"
          --> 1:11
           |
         1 | t0.format(0)
           |           ^
           |
           = Expected string literal
-        "###);
+        ");
 
         // Dynamic string isn't supported yet
-        insta::assert_snapshot!(env.parse_err(r#"t0.format("%Y" ++ "%m")"#), @r###"
+        insta::assert_snapshot!(env.parse_err(r#"t0.format("%Y" ++ "%m")"#), @r#"
          --> 1:11
           |
         1 | t0.format("%Y" ++ "%m")
           |           ^----------^
           |
           = Expected string literal
-        "###);
+        "#);
 
         // Literal alias expansion
         env.add_alias("time_format", r#""%Y-%m-%d""#);
@@ -2874,17 +2926,17 @@ mod tests {
         insta::assert_snapshot!(
             env.render_ok(r#"fill(20, "The quick fox jumps over the " ++
                                   label("error", "lazy") ++ " dog\n")"#),
-            @r###"
+            @r"
         The quick fox jumps
         over the [38;5;1mlazy[39m dog
-        "###);
+        ");
 
         // A low value will not chop words, but can chop a label by words
         insta::assert_snapshot!(
             env.render_ok(r#"fill(9, "Longlonglongword an some short words " ++
                                   label("error", "longlonglongword and short words") ++
                                   " back out\n")"#),
-            @r###"
+            @r"
         Longlonglongword
         an some
         short
@@ -2893,13 +2945,13 @@ mod tests {
         [38;5;1mand short[39m
         [38;5;1mwords[39m
         back out
-        "###);
+        ");
 
         // Filling to 0 means breaking at every word
         insta::assert_snapshot!(
             env.render_ok(r#"fill(0, "The quick fox jumps over the " ++
                                   label("error", "lazy") ++ " dog\n")"#),
-            @r###"
+            @r"
         The
         quick
         fox
@@ -2908,13 +2960,13 @@ mod tests {
         the
         [38;5;1mlazy[39m
         dog
-        "###);
+        ");
 
         // Filling to -0 is the same as 0
         insta::assert_snapshot!(
             env.render_ok(r#"fill(-0, "The quick fox jumps over the " ++
                                   label("error", "lazy") ++ " dog\n")"#),
-            @r###"
+            @r"
         The
         quick
         fox
@@ -2923,7 +2975,7 @@ mod tests {
         the
         [38;5;1mlazy[39m
         dog
-        "###);
+        ");
 
         // Filling to negative width is an error
         insta::assert_snapshot!(
@@ -2936,23 +2988,23 @@ mod tests {
             env.render_ok(r#""START marker to help insta\n" ++
                              indent("    ", fill(20, "The quick fox jumps over the " ++
                                                  label("error", "lazy") ++ " dog\n"))"#),
-            @r###"
+            @r"
         START marker to help insta
             The quick fox jumps
             over the [38;5;1mlazy[39m dog
-        "###);
+        ");
 
         // Word-wrap indented (no special handling for leading spaces)
         insta::assert_snapshot!(
             env.render_ok(r#""START marker to help insta\n" ++
                              fill(20, indent("    ", "The quick fox jumps over the " ++
                                              label("error", "lazy") ++ " dog\n"))"#),
-            @r###"
+            @r"
         START marker to help insta
             The quick fox
         jumps over the [38;5;1mlazy[39m
         dog
-        "###);
+        ");
     }
 
     #[test]
@@ -2971,36 +3023,36 @@ mod tests {
         // "\n" at end of labeled text
         insta::assert_snapshot!(
             env.render_ok(r#"indent("__", label("error", "a\n") ++ label("warning", "b\n"))"#),
-            @r###"
+            @r"
         [38;5;1m__a[39m
         [38;5;3m__b[39m
-        "###);
+        ");
 
         // "\n" in labeled text
         insta::assert_snapshot!(
             env.render_ok(r#"indent("__", label("error", "a") ++ label("warning", "b\nc"))"#),
-            @r###"
+            @r"
         [38;5;1m__a[39m[38;5;3mb[39m
         [38;5;3m__c[39m
-        "###);
+        ");
 
         // Labeled prefix + unlabeled content
         insta::assert_snapshot!(
             env.render_ok(r#"indent(label("error", "XX"), "a\nb\n")"#),
-            @r###"
+            @r"
         [38;5;1mXX[39ma
         [38;5;1mXX[39mb
-        "###);
+        ");
 
         // Nested indent, silly but works
         insta::assert_snapshot!(
             env.render_ok(r#"indent(label("hint", "A"),
                                     label("warning", indent(label("hint", "B"),
                                                             label("error", "x\n") ++ "y")))"#),
-            @r###"
+            @r"
         [38;5;6mAB[38;5;1mx[39m
         [38;5;6mAB[38;5;3my[39m
-        "###);
+        ");
     }
 
     #[test]
@@ -3107,7 +3159,7 @@ mod tests {
                 ++ "\e\\"
                 ++ "Example"
                 ++ "\x1b]8;;\x1B\\""#),
-            @r#"␛]8;;http://example.com␛\Example␛]8;;␛\"#);
+            @r"␛]8;;http://example.com␛\Example␛]8;;␛\");
 
         // Don't sanitize ANSI escape with raw_escape_sequence
         insta::assert_snapshot!(env.render_ok(r#"raw_escape_sequence("\e")"#), @"");
@@ -3119,7 +3171,17 @@ mod tests {
                 ++ "\e\\"
                 ++ "Example"
                 ++ "\x1b]8;;\x1B\\")"#),
-            @r#"]8;;http://example.com\Example]8;;\"#);
+            @r"]8;;http://example.com\Example]8;;\");
+    }
+
+    #[test]
+    fn test_stringify_function() {
+        let mut env = TestTemplateEnv::new();
+        env.add_color("error", crossterm::style::Color::DarkRed);
+
+        insta::assert_snapshot!(env.render_ok("stringify(false)"), @"false");
+        insta::assert_snapshot!(env.render_ok("stringify(42).len()"), @"2");
+        insta::assert_snapshot!(env.render_ok("stringify(label('error', 'text'))"), @"text");
     }
 
     #[test]

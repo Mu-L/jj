@@ -195,6 +195,7 @@ impl Backend for LocalBackend {
         _path: &RepoPath,
         contents: &mut (dyn Read + Send),
     ) -> BackendResult<FileId> {
+        // TODO: Write temporary file in the destination directory (#5712)
         let temp_file = NamedTempFile::new_in(&self.path).map_err(to_other_err)?;
         let mut file = temp_file.as_file();
         let mut hasher = Blake2b512::new();
@@ -223,6 +224,7 @@ impl Backend for LocalBackend {
     }
 
     async fn write_symlink(&self, _path: &RepoPath, target: &str) -> BackendResult<SymlinkId> {
+        // TODO: Write temporary file in the destination directory (#5712)
         let mut temp_file = NamedTempFile::new_in(&self.path).map_err(to_other_err)?;
         temp_file
             .write_all(target.as_bytes())
@@ -245,6 +247,7 @@ impl Backend for LocalBackend {
     }
 
     async fn write_tree(&self, _path: &RepoPath, tree: &Tree) -> BackendResult<TreeId> {
+        // TODO: Write temporary file in the destination directory (#5712)
         let temp_file = NamedTempFile::new_in(&self.path).map_err(to_other_err)?;
 
         let proto = tree_to_proto(tree);
@@ -269,6 +272,7 @@ impl Backend for LocalBackend {
     }
 
     fn write_conflict(&self, _path: &RepoPath, conflict: &Conflict) -> BackendResult<ConflictId> {
+        // TODO: Write temporary file in the destination directory (#5712)
         let temp_file = NamedTempFile::new_in(&self.path).map_err(to_other_err)?;
 
         let proto = conflict_to_proto(conflict);
@@ -311,6 +315,7 @@ impl Backend for LocalBackend {
                 "Cannot write a commit with no parents".into(),
             ));
         }
+        // TODO: Write temporary file in the destination directory (#5712)
         let temp_file = NamedTempFile::new_in(&self.path).map_err(to_other_err)?;
 
         let mut proto = commit_to_proto(&commit);
@@ -347,8 +352,7 @@ impl Backend for LocalBackend {
     }
 }
 
-#[allow(unknown_lints)] // XXX FIXME (aseipp): nightly bogons; re-test this occasionally
-#[allow(clippy::assigning_clones)]
+#[expect(clippy::assigning_clones)]
 pub fn commit_to_proto(commit: &Commit) -> crate::protos::local_store::Commit {
     let mut proto = crate::protos::local_store::Commit::default();
     for parent in &commit.parents {
@@ -542,11 +546,12 @@ mod tests {
     use pollster::FutureExt;
 
     use super::*;
+    use crate::tests::new_temp_dir;
 
     /// Test that parents get written correctly
     #[test]
     fn write_commit_parents() {
-        let temp_dir = testutils::new_temp_dir();
+        let temp_dir = new_temp_dir();
         let store_path = temp_dir.path();
 
         let backend = LocalBackend::init(store_path);

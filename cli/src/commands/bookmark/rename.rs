@@ -20,6 +20,7 @@ use crate::cli_util::CommandHelper;
 use crate::command_error::user_error;
 use crate::command_error::CommandError;
 use crate::complete;
+use crate::revset_util;
 use crate::ui::Ui;
 
 /// Rename `old` bookmark name to `new` bookmark name
@@ -28,10 +29,14 @@ use crate::ui::Ui;
 #[derive(clap::Args, Clone, Debug)]
 pub struct BookmarkRenameArgs {
     /// The old name of the bookmark
-    #[arg(add = ArgValueCandidates::new(complete::local_bookmarks))]
+    #[arg(
+        value_parser = revset_util::parse_bookmark_name,
+        add = ArgValueCandidates::new(complete::local_bookmarks),
+    )]
     old: String,
 
     /// The new name of the bookmark
+    #[arg(value_parser = revset_util::parse_bookmark_name)]
     new: String,
 }
 

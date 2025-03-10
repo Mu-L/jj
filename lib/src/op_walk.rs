@@ -242,7 +242,9 @@ impl PartialOrd for OperationByEndTime {
 }
 
 /// Walks `head_ops` and their ancestors in reverse topological order.
-pub fn walk_ancestors(head_ops: &[Operation]) -> impl Iterator<Item = OpStoreResult<Operation>> {
+pub fn walk_ancestors(
+    head_ops: &[Operation],
+) -> impl Iterator<Item = OpStoreResult<Operation>> + use<> {
     // Emit the latest head first to stabilize the order.
     let mut head_ops = head_ops
         .iter()
@@ -303,7 +305,7 @@ pub fn reparent_range(
     assert!(
         ops_to_reparent
             .last()
-            .map_or(true, |op| op.id() != op_store.root_operation_id()),
+            .is_none_or(|op| op.id() != op_store.root_operation_id()),
         "root operation cannot be rewritten"
     );
     let mut rewritten_ids = HashMap::new();

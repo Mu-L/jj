@@ -28,6 +28,7 @@ use std::time::Instant;
 
 use crossterm::terminal::Clear;
 use crossterm::terminal::ClearType;
+use indoc::writedoc;
 use itertools::Itertools;
 use jj_lib::fmt_util::binary_prefix;
 use jj_lib::git;
@@ -39,7 +40,6 @@ use jj_lib::op_store::RefTarget;
 use jj_lib::op_store::RemoteRef;
 use jj_lib::repo::ReadonlyRepo;
 use jj_lib::repo::Repo;
-use jj_lib::store::Store;
 use jj_lib::workspace::Workspace;
 use unicode_width::UnicodeWidthStr;
 
@@ -50,11 +50,6 @@ use crate::command_error::CommandError;
 use crate::formatter::Formatter;
 use crate::ui::ProgressOutput;
 use crate::ui::Ui;
-
-// TODO: migrate to gitoxide or subprocess, and remove this function
-pub(crate) fn get_git_repo(store: &Store) -> Result<git2::Repository, CommandError> {
-    Ok(git::get_git_backend(store)?.open_git_repo()?)
-}
 
 pub fn is_colocated_git_workspace(workspace: &Workspace, repo: &ReadonlyRepo) -> bool {
     let Ok(git_backend) = git::get_git_backend(repo.store()) else {
@@ -325,6 +320,30 @@ pub fn print_git_import_stats(
         )?;
     }
 
+    if !stats.failed_ref_names.is_empty() {
+        writeln!(ui.warning_default(), "Failed to import some Git refs:")?;
+        let mut formatter = ui.stderr_formatter();
+        for name in &stats.failed_ref_names {
+            write!(formatter, "  ")?;
+            write!(formatter.labeled("git_ref"), "{name}")?;
+            writeln!(formatter)?;
+        }
+    }
+    if stats
+        .failed_ref_names
+        .iter()
+        .any(|name| name.starts_with(git::RESERVED_REMOTE_REF_NAMESPACE.as_bytes()))
+    {
+        writedoc!(
+            ui.hint_default(),
+            "
+            Git remote named '{name}' is reserved for local Git repository.
+            Use `jj git remote rename` to give a different name.
+            ",
+            name = git::REMOTE_NAME_FOR_LOCAL_GIT_REPO,
+        )?;
+    }
+
     Ok(())
 }
 
@@ -491,12 +510,12 @@ impl RefStatus {
         repo: &dyn Repo,
     ) -> Self {
         let (ref_name, ref_kind, tracking_status) = match ref_name {
-            RefName::RemoteBranch { branch, remote } => (
-                format!("{branch}@{remote}"),
+            RefName::RemoteBranch(symbol) => (
+                format!("{symbol}"),
                 RefKind::Branch,
                 if repo
                     .view()
-                    .get_remote_bookmark(branch, remote)
+                    .get_remote_bookmark(symbol.as_ref())
                     .is_tracking()
                 {
                     TrackingStatus::Tracked
@@ -702,7 +721,7 @@ mod tests {
         };
         // First output is after the initial delay
         assert_snapshot!(update(crate::progress::INITIAL_DELAY - Duration::from_millis(1), 0.1), @"");
-        assert_snapshot!(update(Duration::from_millis(1), 0.10), @"[?25l\r 10% [█▊                ][K");
+        assert_snapshot!(update(Duration::from_millis(1), 0.10), @"\u{1b}[?25l\r 10% [█▊                ]\u{1b}[K");
         // No updates for the next 30 milliseconds
         assert_snapshot!(update(Duration::from_millis(10), 0.11), @"");
         assert_snapshot!(update(Duration::from_millis(10), 0.12), @"");

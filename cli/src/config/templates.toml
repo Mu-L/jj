@@ -1,4 +1,12 @@
 [templates]
+backout_description = '''
+concat(
+  'Back out "' ++ description.first_line() ++ '"' ++ "\n",
+  "\n",
+  "This backs out commit " ++ commit_id ++ ".\n",
+)
+'''
+
 bookmark_list = '''
 if(remote,
   if(tracked,
@@ -14,12 +22,13 @@ if(remote,
 
 commit_summary = 'format_commit_summary_with_refs(self, bookmarks)'
 
-annotate_commit_summary = '''
+file_annotate = '''
 separate(" ",
-  change_id.shortest(8),
-  pad_end(8, truncate_end(8, author.email().local())),
-  commit_timestamp(self).local().format('%Y-%m-%d %H:%M:%S'),
-)
+  commit.change_id().shortest(8),
+  pad_end(8, truncate_end(8, commit.author().email().local())),
+  commit_timestamp(commit).local().format('%Y-%m-%d %H:%M:%S'),
+  pad_start(4, line_number),
+) ++ ": " ++ content
 '''
 
 config_list = '''
@@ -175,6 +184,7 @@ commit_summary_separator = 'label("separator", " | ")'
 'format_short_id(id)' = 'id.shortest(8)'
 'format_short_change_id(id)' = 'format_short_id(id)'
 'format_short_commit_id(id)' = 'format_short_id(id)'
+'format_short_operation_id(id)' = 'id.short()'
 'format_short_signature(signature)' = '''
   coalesce(signature.email(), email_placeholder)'''
 'format_detailed_signature(signature)' = '''
@@ -242,7 +252,7 @@ if(ref.tracking_present(), surround("(", ")", separate(", ",
 
 'format_operation(op)' = '''
 concat(
-  separate(" ", op.id().short(), op.user(), format_time_range(op.time())), "\n",
+  separate(" ", format_short_operation_id(op.id()), op.user(), format_time_range(op.time())), "\n",
   op.description().first_line(), "\n",
   if(op.tags(), op.tags() ++ "\n"),
 )
@@ -253,7 +263,7 @@ concat(
 
 'format_operation_oneline(op)' = '''
 separate(" ",
-  op.id().short(), op.user(), format_time_range(op.time()),
+  format_short_operation_id(op.id()), op.user(), format_time_range(op.time()),
   op.description().first_line(),
   if(op.tags(), op.tags()),
 ) ++ "\n"

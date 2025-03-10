@@ -43,27 +43,24 @@ use crate::ui::Ui;
 #[command(group(clap::ArgGroup::new("source").multiple(true).required(true)))]
 pub struct BookmarkMoveArgs {
     /// Move bookmarks from the given revisions
-    // We intentionally do not support the short `-f` for `--from` since it
-    // could be confused with a shorthand for `--force`, and people might not
-    // realize they need `-B`/`--allow-backwards` instead.
     #[arg(
-        long,
+        long, short,
         group = "source",
         value_name = "REVSETS",
         add = ArgValueCandidates::new(complete::all_revisions),
     )]
     from: Vec<RevisionArg>,
 
+    // TODO(#5374): Make required in jj 0.32+
     /// Move bookmarks to this revision
-    // We intentionally do not support the short `-t` for `--to` since we don't
-    // support `-f` for `--from`.
+    // Currently this defaults to the working copy, but in the near
+    // future it will be required to explicitly specify it.
     #[arg(
-        long,
-        default_value = "@",
+        long, short,
         value_name = "REVSET",
         add = ArgValueCandidates::new(complete::all_revisions),
     )]
-    to: RevisionArg,
+    to: Option<RevisionArg>,
 
     /// Allow moving bookmarks backwards or sideways
     #[arg(long, short = 'B')]
@@ -91,8 +88,15 @@ pub fn cmd_bookmark_move(
 ) -> Result<(), CommandError> {
     let mut workspace_command = command.workspace_helper(ui)?;
     let repo = workspace_command.repo().clone();
-
-    let target_commit = workspace_command.resolve_single_rev(ui, &args.to)?;
+    if args.to.is_none() {
+        writeln!(
+            ui.warning_default(),
+            "Target revision was not specified, defaulting to the working copy (--to=@). In the \
+             near future it will be required to explicitly specify it."
+        )?;
+    }
+    let target_commit =
+        workspace_command.resolve_single_rev(ui, args.to.as_ref().unwrap_or(&RevisionArg::AT))?;
     let matched_bookmarks = {
         let is_source_ref: Box<dyn Fn(&RefTarget) -> _> = if !args.from.is_empty() {
             let is_source_commit = workspace_command

@@ -10,6 +10,47 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Release highlights
 
+### Breaking changes
+
+* The minimum supported Rust version (MSRV) is now 1.84.0.
+
+* The `git.push-branch-prefix` config has been removed in favor of
+  `git.push-bookmark-prefix`.
+
+* `jj unsquash` has been removed in favor of `jj squash` and
+  `jj diffedit --restore-descendants`.
+
+* The `jj untrack` subcommand has been removed in favor of `jj file untrack`.
+
+* The following deprecated revset functions have been removed:
+  - `branches()`, `remote_branches()`, `tracked_remote_branches()`, and
+    `untracked_remote_branches()`, which were renamed to "bookmarks".
+  - `file()` and `conflict()`, which were renamed to plural forms.
+  - `files(x, y, ..)` with multiple patterns. Use `files(x|y|..)` instead.
+
+* The following deprecated template functions have been removed:
+  - `branches()`, `local_branches()`, and `remote_branches()`, which were
+    renamed to "bookmarks".
+
+### Deprecations
+
+* `core.watchman.register_snapshot_trigger` has been renamed to `core.watchman.register-snapshot-trigger` for consistency with other configuration options.
+
+### New features
+
+* The 'how to resolve conflicts' hint that is shown when conflicts appear can
+  be hidden by setting `hints.resolving-conflicts = false`.
+
+* `jj op log -d` now has an alias for `jj op log --op-diff`.
+
+* `jj bookmark move --to/--from` can now be abbreviated to `jj bookmark move -t/-f`
+
+### Fixed bugs
+
+## [0.27.0] - 2025-03-05
+
+### Release highlights
+
 * `git.subprocess` is now enabled by default, improving compatibility with Git
   fetches and pushes by spawning an external `git` process. Users can opt out
   of this by setting `git.subprocess = false`, but this will likely be removed
@@ -17,28 +58,137 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking changes
 
+* Bookmark name to be created/updated is now parsed as [a revset
+  symbol](docs/revsets.md#symbols). Quotation may be needed in addition to shell
+  quotes. Example: `jj bookmark create -r@- "'name with space'"`
+
+* `jj bookmark create`, `jj bookmark set` and `jj bookmark move` onto a hidden
+   commit make it visible.
+
+* `jj bookmark forget` now untracks any corresponding remote bookmarks instead
+  of forgetting them, since forgetting a remote bookmark can be unintuitive.
+  The old behavior is still available with the new `--include-remotes` flag.
+
+* `jj fix` now always sets the working directory of invoked tools to be the
+  workspace root, instead of the working directory of the `jj fix`.
+
 * The `ui.allow-filesets` configuration option has been removed.
   [The "fileset" language](docs/filesets.md) has been enabled by default since v0.20.
 
+* `templates.annotate_commit_summary` is renamed to `templates.file_annotate`,
+  and now has an implicit `self` parameter of type `AnnotationLine`, instead of
+  `Commit`. All methods on `Commit` can be accessed with `commit.method()`, or
+  `self.commit().method()`.
+
 ### Deprecations
+
+* This release takes the first steps to make target revision required in
+  `bookmark create`, `bookmark move` and `bookmark set`. Those commands will display
+  a warning if the user does not specify target revision  explicitly. In the near
+  future those commands will fail if target revision is not specified.
+
+* The `signing.sign-all` config option has been deprecated in favor of
+  `signing.behavior`. The new option accepts `drop` (never sign), `keep` (preserve
+  existing signatures), `own` (sign own commits), or `force` (sign all commits).
+  Existing `signing.sign-all = true` translates to `signing.behavior = "own"`, and
+  `false` translates to `"keep"`. Invalid configuration is now an error.
 
 ### New features
 
-* `jj undo` now shows a hint when undoing an undo operation that the user may
-   be looking for `jj op restore` instead.
+* The new `jj sign` and `jj unsign` commands allow for signing/unsigning commits.
+  `jj sign` supports configuring the default revset through `revsets.sign` when
+  no `--revisions` arguments are provided.
+
+* `jj git fetch` now supports [string pattern syntax](docs/revsets.md#string-patterns)
+  on `--remote` option and `git.fetch` configuration.
 
 * Template functions `truncate_start()` and `truncate_end()` gained an optional
   `ellipsis` parameter; passing this prepends or appends the ellipsis to the
   content if it is truncated to fit the maximum width.
+
+* Templates now support `stringify(x)` function and string method
+  `.escape_json()`. The latter serializes the string in JSON format. It is
+  useful for making machine-readable templates by escaping problematic
+  characters like `\n`.
+
+* Templates now support `trim()`, `trim_start()` and `trim_end()` methods
+  which remove whitespace from the start and end of a `String` type.
+
+* The description of commits backed out by `jj backout` can now be configured
+  using `templates.backout_description`.
+
+* New `AnnotationLine` templater type. Used in `templates.file_annotate`.
+  Provides `self.commit()`, `.content()`, `.line_number()`, and
+  `.first_line_in_hunk()`.
+
+* Templates now have `format_short_operation_id(id)` function for users to
+  customize the default operation id representation.
+
+* The `jj init`/`jj revert` stubs that print errors can now be overridden with
+  aliases. All of `jj clone/init/revert` add a hint to a generic error.
+
+* Help text is now colored (when stdout is a terminal).
+
+* Commands that used to suggest `--ignore-immutable` now print the number of
+  immutable commits that would be rewritten if used and a link to the docs.
+
+* `jj undo` now shows a hint when undoing an undo operation that the user may
+   be looking for `jj op restore` instead.
 
 ### Fixed bugs
 
 * `jj status` now shows untracked files under untracked directories.
   [#5389](https://github.com/jj-vcs/jj/issues/5389)
 
+* Added workaround for the bug that untracked files are ignored when watchman is
+  enabled. [#5728](https://github.com/jj-vcs/jj/issues/5728)
+
 * The `signing.backends.ssh.allowed-signers` configuration option will now
   expand `~/` to `$HOME/`.
   [#5626](https://github.com/jj-vcs/jj/pull/5626)
+
+* `config-schema.json` now allows arrays of strings for the settings `ui.editor`
+  and `ui.diff.tool`.
+
+* `config-schema.json` now allows an array of strings or nested table for the
+  `ui.pager` setting.
+
+### Contributors
+
+Thanks to the people who made this release happen!
+
+* Alain Leufroy (@aleufroy)
+* Aleksey Kuznetsov (@zummenix)
+* Alexander Mikhailov (@AM5800)
+* Andrew Gilbert (@andyg0808)
+* Antoine Martin (@alarsyo)
+* Anton Bulakh (@necauqua)
+* Austin Seipp (@thoughtpolice)
+* Baltasar Dinis (@bsdinis)
+* Benjamin Tan (@bnjmnt4n)
+* Bryce Berger (@bryceberger)
+* Burak Varlı (@unexge)
+* David Rieber (@drieber)
+* Emily (@emilazy)
+* Evan Mesterhazy (@emesterhazy)
+* George Christou (@gechr)
+* HKalbasi (@HKalbasi)
+* Ilya Grigoriev (@ilyagr)
+* Jacob Hayes (@JacobHayes)
+* Jonathan Frere (@MrJohz)
+* Jonathan Tan (@jonathantanmy)
+* Josh Steadmon (@steadmon)
+* maan2003 (@maan2003)
+* Martin von Zweigbergk (@martinvonz)
+* Matthew Davidson (@KingMob)
+* Philip Metzger (@PhilipMetzger)
+* Philipp Albrecht (@pylbrecht)
+* Roman Timushev (@rtimush)
+* Samuel Tardieu (@samueltardieu)
+* Scott Taylor (@scott2000)
+* Stephan Hügel (@urschrei)
+* Vincent Ging Ho Yim (@cenviity)
+* Yuya Nishihara (@yuja)
 
 ## [0.26.0] - 2025-02-05
 

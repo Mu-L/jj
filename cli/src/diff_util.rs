@@ -298,7 +298,7 @@ impl<'a> DiffRenderer<'a> {
     }
 
     /// Generates diff between `from_tree` and `to_tree`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn show_diff(
         &self,
         ui: &Ui, // TODO: remove Ui dependency if possible
@@ -322,7 +322,7 @@ impl<'a> DiffRenderer<'a> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn show_diff_inner(
         &self,
         ui: &Ui,
@@ -477,7 +477,7 @@ pub fn get_copy_records<'a>(
     root: &CommitId,
     head: &CommitId,
     matcher: &'a dyn Matcher,
-) -> BackendResult<impl Iterator<Item = BackendResult<CopyRecord>> + 'a> {
+) -> BackendResult<impl Iterator<Item = BackendResult<CopyRecord>> + use<'a>> {
     // TODO: teach backend about matching path prefixes?
     let stream = store.get_copy_records(None, root, head)?;
     // TODO: test record.source as well? should be AND-ed or OR-ed?

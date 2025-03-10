@@ -17,57 +17,59 @@ use std::path::PathBuf;
 
 use indoc::indoc;
 
-use crate::common::get_stderr_string;
+use crate::common::CommandOutput;
 use crate::common::TestEnvironment;
 
 #[test]
 fn test_describe() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     let edit_script = test_env.set_up_fake_editor();
 
     // Set a description using `-m` flag
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description from CLI"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "-m", "description from CLI"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 95979928 (empty) description from CLI
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 
     // Set the same description using `-m` flag, but with explicit newline
-    let (stdout, stderr) =
-        test_env.jj_cmd_ok(&repo_path, &["describe", "-m", "description from CLI\n"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "-m", "description from CLI\n"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
 
     // Check that the text file gets initialized with the current description and
     // make no changes
     std::fs::write(&edit_script, "dump editor0").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        std::fs::read_to_string(test_env.env_root().join("editor0")).unwrap(), @r###"
+        std::fs::read_to_string(test_env.env_root().join("editor0")).unwrap(), @r#"
     description from CLI
 
     JJ: Lines starting with "JJ:" (like this one) will be removed.
-    "###);
+    "#);
 
     // Set a description in editor
     std::fs::write(&edit_script, "write\ndescription from editor").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 94fcb906 (empty) description from editor
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 
     // Lines in editor starting with "JJ: " are ignored
     std::fs::write(
@@ -75,70 +77,76 @@ fn test_describe() {
         "write\nJJ: ignored\ndescription among comment\nJJ: ignored",
     )
     .unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 7a348923 (empty) description among comment
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 
     // Multi-line description
     std::fs::write(&edit_script, "write\nline1\nline2\n\nline4\n\n").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 749361b5 (empty) line1
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
-    let stdout =
-        test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-r@", "-Tdescription"]);
-    insta::assert_snapshot!(stdout, @r###"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-r@", "-Tdescription"]);
+    insta::assert_snapshot!(output, @r"
     line1
     line2
 
     line4
-    "###);
+    [EOF]
+    ");
 
     // Multi-line description again with CRLF, which should make no changes
     std::fs::write(&edit_script, "write\nline1\r\nline2\r\n\r\nline4\r\n\r\n").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
 
     // Multi-line description starting with newlines
     std::fs::write(&edit_script, "write\n\n\nline1\nline2").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm dc44dbee (empty) line1
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
-    let stdout =
-        test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-r@", "-Tdescription"]);
-    insta::assert_snapshot!(stdout, @r#"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-r@", "-Tdescription"]);
+    insta::assert_snapshot!(output, @r"
     line1
     line2
-    "#);
+    [EOF]
+    ");
 
     // Clear description
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe", "-m", ""]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "-m", ""]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 6296963b (empty) (no description set)
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     std::fs::write(&edit_script, "write\n").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
 
     // Fails if the editor fails
     std::fs::write(&edit_script, "fail").unwrap();
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["describe"]);
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
     insta::with_settings!({
         filters => [
             (r"\bEditor '[^']*'", "Editor '<redacted>'"),
@@ -146,10 +154,13 @@ fn test_describe() {
             ("exit code", "exit status"), // Windows
         ],
     }, {
-        insta::assert_snapshot!(stderr, @r"
+        insta::assert_snapshot!(output, @r"
+        ------- stderr -------
         Error: Failed to edit description
         Caused by: Editor '<redacted>' exited with exit status: 1
         Hint: Edited description is left in $TEST_ENV/repo/.jj/repo/editor-<redacted>.jjdescription
+        [EOF]
+        [exit status: 1]
         ");
     });
 
@@ -168,110 +179,147 @@ fn test_describe() {
         "},
     )
     .unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 10fa2dc7 (empty) description from editor
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "#);
-    let stdout =
-        test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-r@", "-Tdescription"]);
-    insta::assert_snapshot!(stdout, @r#"
+    [EOF]
+    ");
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-r@", "-Tdescription"]);
+    insta::assert_snapshot!(output, @r"
     description from editor
 
     content of message from editor
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_describe_editor_env() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Fails if the editor doesn't exist
-    let assert = test_env
-        .jj_cmd(&repo_path, &["describe"])
-        .env("EDITOR", "this-editor-does-not-exist")
-        .assert()
-        .failure();
-    assert!(get_stderr_string(&assert).contains("Failed to run"));
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .arg("describe")
+            .env("EDITOR", "this-editor-does-not-exist")
+    });
+    insta::assert_snapshot!(
+        output.normalize_stderr_with(|s| s.split_inclusive('\n').take(3).collect()), @r"
+    ------- stderr -------
+    Error: Failed to edit description
+    Caused by:
+    1: Failed to run editor 'this-editor-does-not-exist'
+    [EOF]
+    [exit status: 1]
+    ");
 
     // `$VISUAL` overrides `$EDITOR`
-    let assert = test_env
-        .jj_cmd(&repo_path, &["describe"])
-        .env("VISUAL", "bad-editor-from-visual-env")
-        .env("EDITOR", "bad-editor-from-editor-env")
-        .assert()
-        .failure();
-    assert!(get_stderr_string(&assert).contains("bad-editor-from-visual-env"));
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .arg("describe")
+            .env("VISUAL", "bad-editor-from-visual-env")
+            .env("EDITOR", "bad-editor-from-editor-env")
+    });
+    insta::assert_snapshot!(
+        output.normalize_stderr_with(|s| s.split_inclusive('\n').take(3).collect()), @r"
+    ------- stderr -------
+    Error: Failed to edit description
+    Caused by:
+    1: Failed to run editor 'bad-editor-from-visual-env'
+    [EOF]
+    [exit status: 1]
+    ");
 
     // `ui.editor` config overrides `$VISUAL`
     test_env.add_config(r#"ui.editor = "bad-editor-from-config""#);
-    let assert = test_env
-        .jj_cmd(&repo_path, &["describe"])
-        .env("VISUAL", "bad-editor-from-visual-env")
-        .assert()
-        .failure();
-    assert!(get_stderr_string(&assert).contains("bad-editor-from-config"));
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .arg("describe")
+            .env("VISUAL", "bad-editor-from-visual-env")
+    });
+    insta::assert_snapshot!(
+        output.normalize_stderr_with(|s| s.split_inclusive('\n').take(3).collect()), @r"
+    ------- stderr -------
+    Error: Failed to edit description
+    Caused by:
+    1: Failed to run editor 'bad-editor-from-config'
+    [EOF]
+    [exit status: 1]
+    ");
 
     // `$JJ_EDITOR` overrides `ui.editor` config
-    let assert = test_env
-        .jj_cmd(&repo_path, &["describe"])
-        .env("JJ_EDITOR", "bad-jj-editor-from-jj-editor-env")
-        .assert()
-        .failure();
-    assert!(get_stderr_string(&assert).contains("bad-jj-editor-from-jj-editor-env"));
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.current_dir(&repo_path)
+            .arg("describe")
+            .env("JJ_EDITOR", "bad-jj-editor-from-jj-editor-env")
+    });
+    insta::assert_snapshot!(
+        output.normalize_stderr_with(|s| s.split_inclusive('\n').take(3).collect()), @r"
+    ------- stderr -------
+    Error: Failed to edit description
+    Caused by:
+    1: Failed to run editor 'bad-jj-editor-from-jj-editor-env'
+    [EOF]
+    [exit status: 1]
+    ");
 }
 
 #[test]
 fn test_describe_multiple_commits() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     let edit_script = test_env.set_up_fake_editor();
 
     // Initial setup
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r###"
+    test_env.run_jj_in(&repo_path, ["new"]).success();
+    test_env.run_jj_in(&repo_path, ["new"]).success();
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r"
     @  c6349e79bbfd
     ○  65b6b74e0897
     ○  230dd059e1b0
     ◆  000000000000
-    "###);
+    [EOF]
+    ");
 
     // Set the description of multiple commits using `-m` flag
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &["describe", "-r@", "-r@--", "-m", "description from CLI"],
+        ["describe", "-r@", "-r@--", "-m", "description from CLI"],
     );
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Updated 2 commits
     Rebased 1 descendant commits
     Working copy now at: kkmpptxz 41659b84 (empty) description from CLI
     Parent commit      : rlvkpnrz 8d650510 (empty) (no description set)
-    "###);
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r###"
+    [EOF]
+    ");
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r"
     @  41659b846096 description from CLI
     ○  8d650510daad
     ○  a42f5755e688 description from CLI
     ◆  000000000000
-    "###);
+    [EOF]
+    ");
 
     // Check that the text file gets initialized with the current description of
     // each commit and doesn't update commits if no changes are made.
     // Commit descriptions are edited in topological order
     std::fs::write(&edit_script, "dump editor0").unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe", "-r@", "@-"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "-r@", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        std::fs::read_to_string(test_env.env_root().join("editor0")).unwrap(), @r###"
+        std::fs::read_to_string(test_env.env_root().join("editor0")).unwrap(), @r#"
     JJ: Enter or edit commit descriptions after the `JJ: describe` lines.
     JJ: Warning:
     JJ: - The text you enter will be lost on a syntax error.
@@ -283,7 +331,7 @@ fn test_describe_multiple_commits() {
     description from CLI
 
     JJ: Lines starting with "JJ: " (like this one) will be removed.
-    "###);
+    "#);
 
     // Set the description of multiple commits in the editor
     std::fs::write(
@@ -308,14 +356,15 @@ fn test_describe_multiple_commits() {
         "},
     )
     .unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe", "@", "@-"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "@", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Updated 2 commits
     Working copy now at: kkmpptxz f203494a (empty) description from editor of @
     Parent commit      : rlvkpnrz 0d76a92c (empty) description from editor of @-
-    "###);
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r###"
+    [EOF]
+    ");
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r"
     @  f203494a4507 description from editor of @
     │
     │  further commit message of @
@@ -324,7 +373,8 @@ fn test_describe_multiple_commits() {
     │  further commit message of @-
     ○  a42f5755e688 description from CLI
     ◆  000000000000
-    "###);
+    [EOF]
+    ");
 
     // Fails if the edited message has a commit with multiple descriptions
     std::fs::write(
@@ -350,10 +400,13 @@ fn test_describe_multiple_commits() {
         "},
     )
     .unwrap();
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["describe", "@", "@-"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "@", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: The following commits were found in the edited message multiple times: 0d76a92ca7cc
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
 
     // Fails if the edited message has unexpected commit IDs
     std::fs::write(
@@ -377,10 +430,13 @@ fn test_describe_multiple_commits() {
         "},
     )
     .unwrap();
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["describe", "@", "@-"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "@", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: The following commits were not being edited, but were found in the edited message: 000000000000
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
 
     // Fails if the edited message has missing commit messages
     std::fs::write(
@@ -396,10 +452,13 @@ fn test_describe_multiple_commits() {
         "},
     )
     .unwrap();
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["describe", "@", "@-"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "@", "@-"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Error: The description for the following commits were not found in the edited message: 0d76a92ca7cc
-    "###);
+    [EOF]
+    [exit status: 1]
+    ");
 
     // Fails if the edited message has a line which does not have any preceding
     // `JJ: describe` headers
@@ -416,14 +475,17 @@ fn test_describe_multiple_commits() {
         "},
     )
     .unwrap();
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["describe", "@", "@-"]);
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "@", "@-"]);
+    insta::assert_snapshot!(output, @r#"
+    ------- stderr -------
     Error: Found the following line without a commit header: "description from editor of @-"
-    "###);
+    [EOF]
+    [exit status: 1]
+    "#);
 
     // Fails if the editor fails
     std::fs::write(&edit_script, "fail").unwrap();
-    let stderr = test_env.jj_cmd_failure(&repo_path, &["describe", "@", "@-"]);
+    let output = test_env.run_jj_in(&repo_path, ["describe", "@", "@-"]);
     insta::with_settings!({
         filters => [
             (r"\bEditor '[^']*'", "Editor '<redacted>'"),
@@ -431,10 +493,13 @@ fn test_describe_multiple_commits() {
             ("exit code", "exit status"), // Windows
         ],
     }, {
-        insta::assert_snapshot!(stderr, @r"
+        insta::assert_snapshot!(output, @r"
+        ------- stderr -------
         Error: Failed to edit description
         Caused by: Editor '<redacted>' exited with exit status: 1
         Hint: Edited description is left in $TEST_ENV/repo/.jj/repo/editor-<redacted>.jjdescription
+        [EOF]
+        [exit status: 1]
         ");
     });
 
@@ -457,34 +522,36 @@ fn test_describe_multiple_commits() {
         "},
     )
     .unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&repo_path, &["describe", "@-", "@--"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r#"
+    let output = test_env.run_jj_in(&repo_path, ["describe", "@-", "@--"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Updated 2 commits
     Rebased 1 descendant commits
     Working copy now at: kkmpptxz 1d7701ee (empty) description from editor of @
     Parent commit      : rlvkpnrz 5389926e (empty) description from editor for @-
-    "#);
-    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r#"
+    [EOF]
+    ");
+    insta::assert_snapshot!(get_log_output(&test_env, &repo_path), @r"
     @  1d7701eec9bc description from editor of @
     │
     │  further commit message of @
     ○  5389926ebed6 description from editor for @-
     ○  eaa8547ae37a description from editor for @--
     ◆  000000000000
-    "#);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_multiple_message_args() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     // Set a description using `-m` flag
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "describe",
             "-m",
             "First Paragraph from CLI",
@@ -492,24 +559,25 @@ fn test_multiple_message_args() {
             "Second Paragraph from CLI",
         ],
     );
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 99a36a50 (empty) First Paragraph from CLI
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 
-    let stdout =
-        test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-r@", "-Tdescription"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-r@", "-Tdescription"]);
+    insta::assert_snapshot!(output, @r"
     First Paragraph from CLI
 
     Second Paragraph from CLI
-    "###);
+    [EOF]
+    ");
 
     // Set the same description, with existing newlines
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "describe",
             "-m",
             "First Paragraph from CLI\n",
@@ -517,15 +585,16 @@ fn test_multiple_message_args() {
             "Second Paragraph from CLI\n",
         ],
     );
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Nothing changed.
-    "###);
+    [EOF]
+    ");
 
     // Use an empty -m flag between paragraphs to insert an extra blank line
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &repo_path,
-        &[
+        [
             "describe",
             "-m",
             "First Paragraph from CLI\n",
@@ -535,26 +604,27 @@ fn test_multiple_message_args() {
             "Second Paragraph from CLI",
         ],
     );
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 01ac40b3 (empty) First Paragraph from CLI
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
 
-    let stdout =
-        test_env.jj_cmd_success(&repo_path, &["log", "--no-graph", "-r@", "-Tdescription"]);
-    insta::assert_snapshot!(stdout, @r###"
+    let output = test_env.run_jj_in(&repo_path, ["log", "--no-graph", "-r@", "-Tdescription"]);
+    insta::assert_snapshot!(output, @r"
     First Paragraph from CLI
 
 
     Second Paragraph from CLI
-    "###);
+    [EOF]
+    ");
 }
 
 #[test]
 fn test_describe_default_description() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     test_env.add_config(r#"ui.default-description = "\n\nTESTED=TODO""#);
     let workspace_path = test_env.env_root().join("repo");
 
@@ -562,14 +632,15 @@ fn test_describe_default_description() {
     std::fs::write(workspace_path.join("file2"), "bar\n").unwrap();
     let edit_script = test_env.set_up_fake_editor();
     std::fs::write(edit_script, ["dump editor"].join("\0")).unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(&workspace_path, &["describe"]);
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r###"
+    let output = test_env.run_jj_in(&workspace_path, ["describe"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 573b6df5 TESTED=TODO
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
-    "###);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r###"
+        std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r#"
     TESTED=TODO
 
     JJ: This commit contains the following changes:
@@ -577,13 +648,13 @@ fn test_describe_default_description() {
     JJ:     A file2
 
     JJ: Lines starting with "JJ:" (like this one) will be removed.
-    "###);
+    "#);
 }
 
 #[test]
 fn test_describe_author() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let repo_path = test_env.env_root().join("repo");
 
     let edit_script = test_env.set_up_fake_editor();
@@ -611,22 +682,15 @@ fn test_describe_author() {
         '''
     "#});
     let get_signatures = || {
-        test_env.jj_cmd_success(
-            &repo_path,
-            &[
-                "log",
-                "-r..",
-                "-T",
-                r#"format_signature(author) ++ "\n" ++ format_signature(committer)"#,
-            ],
-        )
+        let template = r#"format_signature(author) ++ "\n" ++ format_signature(committer)"#;
+        test_env.run_jj_in(&repo_path, ["log", "-r..", "-T", template])
     };
 
     // Initial setup
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
-    test_env.jj_cmd_ok(&repo_path, &["new"]);
-    insta::assert_snapshot!(get_signatures(), @r###"
+    test_env.run_jj_in(&repo_path, ["new"]).success();
+    test_env.run_jj_in(&repo_path, ["new"]).success();
+    test_env.run_jj_in(&repo_path, ["new"]).success();
+    insta::assert_snapshot!(get_signatures(), @r"
     @  Test User test.user@example.com 2001-02-03 04:05:10.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:10.000 +07:00
     ○  Test User test.user@example.com 2001-02-03 04:05:09.000 +07:00
@@ -636,18 +700,21 @@ fn test_describe_author() {
     ○  Test User test.user@example.com 2001-02-03 04:05:07.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:07.000 +07:00
     ~
-    "###);
+    [EOF]
+    ");
 
     // Change the author for the latest commit (the committer is always reset)
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "describe",
-            "--author",
-            "Super Seeder <super.seeder@example.com>",
-        ],
-    );
-    insta::assert_snapshot!(get_signatures(), @r#"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "describe",
+                "--author",
+                "Super Seeder <super.seeder@example.com>",
+            ],
+        )
+        .success();
+    insta::assert_snapshot!(get_signatures(), @r"
     @  Super Seeder super.seeder@example.com 2001-02-03 04:05:12.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:12.000 +07:00
     ○  Test User test.user@example.com 2001-02-03 04:05:09.000 +07:00
@@ -657,30 +724,33 @@ fn test_describe_author() {
     ○  Test User test.user@example.com 2001-02-03 04:05:07.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:07.000 +07:00
     ~
-    "#);
+    [EOF]
+    ");
     insta::assert_snapshot!(
-        std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r###"
+        std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r#"
     JJ: Author: Super Seeder <super.seeder@example.com> (2001-02-03 08:05:12)
     JJ: Committer: Test User <test.user@example.com> (2001-02-03 08:05:12)
 
     JJ: 0 files changed, 0 insertions(+), 0 deletions(-)
 
     JJ: Lines starting with "JJ:" (like this one) will be removed.
-    "###);
+    "#);
 
     // Change the author for multiple commits (the committer is always reset)
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "describe",
-            "@---",
-            "@-",
-            "--no-edit",
-            "--author",
-            "Super Seeder <super.seeder@example.com>",
-        ],
-    );
-    insta::assert_snapshot!(get_signatures(), @r#"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "describe",
+                "@---",
+                "@-",
+                "--no-edit",
+                "--author",
+                "Super Seeder <super.seeder@example.com>",
+            ],
+        )
+        .success();
+    insta::assert_snapshot!(get_signatures(), @r"
     @  Super Seeder super.seeder@example.com 2001-02-03 04:05:12.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:14.000 +07:00
     ○  Super Seeder super.seeder@example.com 2001-02-03 04:05:14.000 +07:00
@@ -690,20 +760,23 @@ fn test_describe_author() {
     ○  Super Seeder super.seeder@example.com 2001-02-03 04:05:14.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:14.000 +07:00
     ~
-    "#);
+    [EOF]
+    ");
 
     // Reset the author for the latest commit (the committer is always reset)
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "describe",
-            "--config=user.name=Ove Ridder",
-            "--config=user.email=ove.ridder@example.com",
-            "--no-edit",
-            "--reset-author",
-        ],
-    );
-    insta::assert_snapshot!(get_signatures(), @r#"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "describe",
+                "--config=user.name=Ove Ridder",
+                "--config=user.email=ove.ridder@example.com",
+                "--no-edit",
+                "--reset-author",
+            ],
+        )
+        .success();
+    insta::assert_snapshot!(get_signatures(), @r"
     @  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:16.000 +07:00
     │  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:16.000 +07:00
     ○  Super Seeder super.seeder@example.com 2001-02-03 04:05:14.000 +07:00
@@ -713,21 +786,24 @@ fn test_describe_author() {
     ○  Super Seeder super.seeder@example.com 2001-02-03 04:05:14.000 +07:00
     │  Test User test.user@example.com 2001-02-03 04:05:14.000 +07:00
     ~
-    "#);
+    [EOF]
+    ");
 
     // Reset the author for multiple commits (the committer is always reset)
-    test_env.jj_cmd_ok(
-        &repo_path,
-        &[
-            "describe",
-            "@---",
-            "@-",
-            "--config=user.name=Ove Ridder",
-            "--config=user.email=ove.ridder@example.com",
-            "--reset-author",
-        ],
-    );
-    insta::assert_snapshot!(get_signatures(), @r#"
+    test_env
+        .run_jj_in(
+            &repo_path,
+            [
+                "describe",
+                "@---",
+                "@-",
+                "--config=user.name=Ove Ridder",
+                "--config=user.email=ove.ridder@example.com",
+                "--reset-author",
+            ],
+        )
+        .success();
+    insta::assert_snapshot!(get_signatures(), @r"
     @  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:18.000 +07:00
     │  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:18.000 +07:00
     ○  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:18.000 +07:00
@@ -737,7 +813,8 @@ fn test_describe_author() {
     ○  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:18.000 +07:00
     │  Ove Ridder ove.ridder@example.com 2001-02-03 04:05:18.000 +07:00
     ~
-    "#);
+    [EOF]
+    ");
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r#"
     JJ: Enter or edit commit descriptions after the `JJ: describe` lines.
@@ -766,12 +843,12 @@ fn test_describe_author() {
 #[test]
 fn test_describe_avoids_unc() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
     let edit_script = test_env.set_up_fake_editor();
 
     std::fs::write(edit_script, "dump-path path").unwrap();
-    test_env.jj_cmd_ok(&workspace_path, &["describe"]);
+    test_env.run_jj_in(&workspace_path, ["describe"]).success();
 
     let edited_path =
         PathBuf::from(std::fs::read_to_string(test_env.env_root().join("path")).unwrap());
@@ -784,19 +861,20 @@ fn test_describe_avoids_unc() {
 #[test]
 fn test_describe_with_edit_and_message_args_opens_editor() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
     let edit_script = test_env.set_up_fake_editor();
     std::fs::write(edit_script, ["dump editor"].join("\0")).unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(
+    let output = test_env.run_jj_in(
         &workspace_path,
-        &["describe", "-m", "message from command line", "--edit"],
+        ["describe", "-m", "message from command line", "--edit"],
     );
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r"
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm 61ece7a9 (empty) message from command line
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
+    [EOF]
     ");
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r#"
@@ -809,21 +887,21 @@ fn test_describe_with_edit_and_message_args_opens_editor() {
 #[test]
 fn test_describe_change_with_existing_message_with_edit_and_message_args_opens_editor() {
     let mut test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
-    test_env.jj_cmd_ok(&workspace_path, &["describe", "-m", "original message"]);
+    test_env
+        .run_jj_in(&workspace_path, ["describe", "-m", "original message"])
+        .success();
 
     let edit_script = test_env.set_up_fake_editor();
     std::fs::write(edit_script, ["dump editor"].join("\0")).unwrap();
-    let (stdout, stderr) = test_env.jj_cmd_ok(
-        &workspace_path,
-        &["describe", "-m", "new message", "--edit"],
-    );
-    insta::assert_snapshot!(stdout, @"");
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&workspace_path, ["describe", "-m", "new message", "--edit"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     Working copy now at: qpvuntsm de694560 (empty) new message
     Parent commit      : zzzzzzzz 00000000 (empty) (no description set)
+    [EOF]
     ");
     insta::assert_snapshot!(
         std::fs::read_to_string(test_env.env_root().join("editor")).unwrap(), @r#"
@@ -836,20 +914,24 @@ fn test_describe_change_with_existing_message_with_edit_and_message_args_opens_e
 #[test]
 fn test_edit_cannot_be_used_with_no_edit() {
     let test_env = TestEnvironment::default();
-    test_env.jj_cmd_ok(test_env.env_root(), &["git", "init", "repo"]);
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let workspace_path = test_env.env_root().join("repo");
 
-    let stderr = test_env.jj_cmd_cli_error(&workspace_path, &["describe", "--no-edit", "--edit"]);
-    insta::assert_snapshot!(stderr, @r"
+    let output = test_env.run_jj_in(&workspace_path, ["describe", "--no-edit", "--edit"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
     error: the argument '--no-edit' cannot be used with '--edit'
 
     Usage: jj describe --no-edit [REVSETS]...
 
     For more information, try '--help'.
+    [EOF]
+    [exit status: 2]
     ");
 }
 
-fn get_log_output(test_env: &TestEnvironment, repo_path: &Path) -> String {
+#[must_use]
+fn get_log_output(test_env: &TestEnvironment, repo_path: &Path) -> CommandOutput {
     let template = r#"commit_id.short() ++ " " ++ description"#;
-    test_env.jj_cmd_success(repo_path, &["log", "-T", template])
+    test_env.run_jj_in(repo_path, ["log", "-T", template])
 }

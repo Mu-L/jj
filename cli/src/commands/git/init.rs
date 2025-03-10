@@ -15,12 +15,14 @@
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str;
 use std::sync::Arc;
 
 use jj_lib::file_util;
 use jj_lib::git;
 use jj_lib::git::parse_git_ref;
 use jj_lib::git::RefName;
+use jj_lib::refs::RemoteRefSymbol;
 use jj_lib::repo::ReadonlyRepo;
 use jj_lib::repo::Repo;
 use jj_lib::workspace::Workspace;
@@ -31,11 +33,11 @@ use crate::cli_util::start_repo_transaction;
 use crate::cli_util::CommandHelper;
 use crate::cli_util::WorkspaceCommandHelper;
 use crate::command_error::cli_error;
+use crate::command_error::internal_error;
 use crate::command_error::user_error_with_hint;
 use crate::command_error::user_error_with_message;
 use crate::command_error::CommandError;
 use crate::commands::git::maybe_add_gitignore;
-use crate::git_util::get_git_repo;
 use crate::git_util::is_colocated_git_workspace;
 use crate::git_util::print_failed_git_export;
 use crate::git_util::print_git_import_stats;
@@ -207,16 +209,11 @@ fn init_git_refs(
     let mut tx = start_repo_transaction(&repo, string_args);
     // There should be no old refs to abandon, but enforce it.
     git_settings.abandon_unreachable_commits = false;
-    let stats = git::import_some_refs(
-        tx.repo_mut(),
-        &git_settings,
-        // Initial import shouldn't fail because of reserved remote name.
-        |ref_name| !git::is_reserved_git_remote_ref(ref_name),
-    )?;
+    let stats = git::import_refs(tx.repo_mut(), &git_settings)?;
+    print_git_import_stats(ui, tx.repo(), &stats, false)?;
     if !tx.repo().has_changes() {
         return Ok(repo);
     }
-    print_git_import_stats(ui, tx.repo(), &stats, false)?;
     if colocated {
         // If git.auto-local-bookmark = true, local bookmarks could be created for
         // the imported remote branches.
@@ -236,16 +233,22 @@ pub fn maybe_set_repository_level_trunk_alias(
     ui: &Ui,
     workspace_command: &WorkspaceCommandHelper,
 ) -> Result<(), CommandError> {
-    let git_repo = get_git_repo(workspace_command.repo().store())?;
-    if let Ok(reference) = git_repo.find_reference("refs/remotes/origin/HEAD") {
-        if let Some(reference_name) = reference.symbolic_target() {
-            if let Some(RefName::RemoteBranch { branch, .. }) = parse_git_ref(reference_name) {
-                write_repository_level_trunk_alias(
-                    ui,
-                    workspace_command.repo_path(),
-                    "origin",
-                    &branch,
-                )?;
+    let git_repo = git::get_git_repo(workspace_command.repo().store())?;
+    if let Some(reference) = git_repo
+        .try_find_reference("refs/remotes/origin/HEAD")
+        .map_err(internal_error)?
+    {
+        if let Some(reference_name) = reference.target().try_name() {
+            if let Some(RefName::RemoteBranch(symbol)) = str::from_utf8(reference_name.as_bstr())
+                .ok()
+                .and_then(parse_git_ref)
+            {
+                // TODO: Can we assume the symbolic target points to the same remote?
+                let symbol = RemoteRefSymbol {
+                    name: &symbol.name,
+                    remote: "origin",
+                };
+                write_repository_level_trunk_alias(ui, workspace_command.repo_path(), symbol)?;
             }
         };
     };

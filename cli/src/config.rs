@@ -490,6 +490,7 @@ pub fn default_config_layers() -> Vec<ConfigLayer> {
     let parse = |text: &'static str| ConfigLayer::parse(ConfigSource::Default, text).unwrap();
     let mut layers = vec![
         parse(include_str!("config/colors.toml")),
+        parse(include_str!("config/hints.toml")),
         parse(include_str!("config/merge_tools.toml")),
         parse(include_str!("config/misc.toml")),
         parse(include_str!("config/revsets.toml")),
@@ -603,8 +604,26 @@ pub fn default_config_migrations() -> Vec<ConfigMigrationRule> {
     vec![
         // TODO: Delete in jj 0.32+
         ConfigMigrationRule::rename_value("git.auto-local-branch", "git.auto-local-bookmark"),
-        // TODO: Delete in jj 0.28+
-        ConfigMigrationRule::rename_value("git.push-branch-prefix", "git.push-bookmark-prefix"),
+        // TODO: Delete in jj 0.33+
+        ConfigMigrationRule::rename_update_value(
+            "signing.sign-all",
+            "signing.behavior",
+            |old_value| {
+                if old_value
+                    .as_bool()
+                    .ok_or("signing.sign-all expects a boolean")?
+                {
+                    Ok("own".into())
+                } else {
+                    Ok("keep".into())
+                }
+            },
+        ),
+        // TODO: Delete in jj 0.34+
+        ConfigMigrationRule::rename_value(
+            "core.watchman.register_snapshot_trigger",
+            "core.watchman.register-snapshot-trigger",
+        ),
     ]
 }
 
