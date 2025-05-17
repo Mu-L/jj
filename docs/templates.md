@@ -31,6 +31,9 @@ The following operators are supported.
 * `x.f()`: Method call.
 * `-x`: Negate integer value.
 * `!x`: Logical not.
+* `x * y`, `x / y`, `x % y`: Multiplication/division/remainder. Operands must
+  be `Integer`s.
+* `x + y`, `x - y`: Addition/subtraction. Operands must be `Integer`s.
 * `x >= y`, `x > y`, `x <= y`, `x < y`: Greater than or equal/greater than/
   lesser than or equal/lesser than. Operands must be `Integer`s.
 * `x == y`, `x != y`: Equal/not equal. Operands must be either `Boolean`,
@@ -145,12 +148,19 @@ This type cannot be printed. The following methods are defined.
   likely to change in future version to respect the command line path arguments.
 * `.root() -> Boolean`: True if the commit is the root commit.
 
-### `CommitId` / `ChangeId` type
+### `ChangeId` type
 
 The following methods are defined.
 
-* `.normal_hex() -> String`: Normal hex representation (0-9a-f), useful for
-  ChangeId, whose canonical hex representation is "reversed" (z-k).
+* `.normal_hex() -> String`: Normal hex representation (0-9a-f) instead of the
+  canonical "reversed" (z-k) representation.
+* `.short([len: Integer]) -> String`
+* `.shortest([min_len: Integer]) -> ShortestIdPrefix`: Shortest unique prefix.
+
+### `CommitId` type
+
+The following methods are defined.
+
 * `.short([len: Integer]) -> String`
 * `.shortest([min_len: Integer]) -> ShortestIdPrefix`: Shortest unique prefix.
 

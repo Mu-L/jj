@@ -31,6 +31,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Deprecations
 
+* The `ui.diff.format` and `ui.diff.tool` config options have been merged as
+  `ui.diff-formatter`. The builtin format can be specified as `:<format>`
+  (e.g. `ui.diff-formatter=":git"` for Git diffs.)
+
+* The `.normal_hex()` method will be removed from the `CommitId` template type.
+  It's useful only for the `ChangeId` type.
+
 ### New features
 
 * `jj split` has gained a `--message` option to set the description of the
@@ -39,6 +46,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * `jj split` has gained the ability to place the revision with the selected changes
   anywhere in the revision tree with the `--insert-before`, `--insert-after` and
   `--destination` command line flags.
+
+* Added `git.track-default-bookmark-on-clone` setting to control whether to
+  track the default remote bookmark on `jj git clone`.
+
+* Templates can now do arithmetic on integers with the `+`, `-`, `*`, `/`, and `%`
+  infix operators.
 
 ### Fixed bugs
 

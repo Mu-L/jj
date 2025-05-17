@@ -284,8 +284,10 @@ can override the default style with the following keys:
 
 ```toml
 [ui]
-# Possible values: "color-words" (default), "git", "summary"
-diff.format = "git"
+# Builtin formats: ":color-words" (default), ":git",
+#                  ":summary", ":stat", ":types", ":name-only"
+# or external command name and arguments (see below)
+diff-formatter = ":git"
 ```
 
 #### Color-words diff options
@@ -337,15 +339,15 @@ context = 3
 
 ### Generating diffs by external command
 
-If `ui.diff.tool` is set, the specified diff command will be called instead of
-the internal diff function.
+If `ui.diff-formatter` is not a builtin format, the specified diff command will
+be called.
 
 ```toml
 [ui]
 # Use Difftastic by default
-diff.tool = ["difft", "--color=always", "$left", "$right"]
+diff-formatter = ["difft", "--color=always", "$left", "$right"]
 # Use tool named "<name>" (see below)
-diff.tool = "<name>"
+diff-formatter = "<name>"
 ```
 
 The external diff tool can also be enabled by `diff --tool <name>` argument.
@@ -366,7 +368,7 @@ invocations as follows:
 
 ```toml
 [ui]
-diff.tool = "vimdiff"
+diff-formatter = "vimdiff"
 
 [merge-tools.vimdiff]
 diff-invocation-mode = "file-by-file"
@@ -844,7 +846,6 @@ my-script = ["util", "exec", "--", "my-jj-script"]
 #                            ^^^^
 # This makes sure that flags are passed to your script instead of parsed by jj.
 my-inline-script = ["util", "exec", "--", "bash", "-c", """
-#!/usr/bin/env bash
 set -euo pipefail
 echo "Look Ma, everything in one file!"
 echo "args: $@"
@@ -853,6 +854,9 @@ echo "args: $@"
 # This last empty string will become "$0" in bash, so your actual arguments
 # are all included in "$@" and start at "$1" as expected.
 ```
+
+> Note: Shebangs (e.g. `#!/usr/bin/env`) aren't necessary since you're already
+> explicitly passing your script into the right shell.
 
 ## Editor
 
@@ -1456,6 +1460,20 @@ jj bookmark track feature1@origin
 # delete local gh-pages bookmark and stop tracking it
 jj bookmark delete gh-pages
 jj bookmark untrack gh-pages@upstream
+```
+
+### Automatic local bookmark creation on `jj git clone`
+
+When cloning a new Git repository, `jj` by default creates a local bookmark
+tracking the default remote bookmark (such as `main` for `main@origin`.) If you
+aren't going to update the `main` bookmark locally, the tracking bookmark isn't
+necessary.
+
+This behavior can be disabled by
+
+```toml
+[git]
+track-default-bookmark-on-clone = false
 ```
 
 ### Abandon commits that became unreachable in Git
