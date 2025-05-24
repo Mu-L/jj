@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use std::any::Any;
-use std::io::Read;
 use std::path::Path;
+use std::pin::Pin;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -47,6 +47,7 @@ use jj_lib::settings::UserSettings;
 use jj_lib::signing::Signer;
 use jj_lib::workspace::Workspace;
 use jj_lib::workspace::WorkspaceInitError;
+use tokio::io::AsyncRead;
 
 #[derive(clap::Parser, Clone, Debug)]
 enum CustomCommand {
@@ -91,6 +92,7 @@ fn main() -> std::process::ExitCode {
         .add_store_factories(create_store_factories())
         .add_subcommand(run_custom_command)
         .run()
+        .into()
 }
 
 /// A commit backend that's extremely similar to the Git backend
@@ -145,14 +147,18 @@ impl Backend for JitBackend {
         1
     }
 
-    async fn read_file(&self, path: &RepoPath, id: &FileId) -> BackendResult<Box<dyn Read>> {
+    async fn read_file(
+        &self,
+        path: &RepoPath,
+        id: &FileId,
+    ) -> BackendResult<Pin<Box<dyn AsyncRead>>> {
         self.inner.read_file(path, id).await
     }
 
     async fn write_file(
         &self,
         path: &RepoPath,
-        contents: &mut (dyn Read + Send),
+        contents: &mut (dyn AsyncRead + Send + Unpin),
     ) -> BackendResult<FileId> {
         self.inner.write_file(path, contents).await
     }

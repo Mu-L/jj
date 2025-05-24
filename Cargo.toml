@@ -76,8 +76,8 @@ proc-macro2 = "1.0.95"
 prost = "0.13.5"
 prost-build = "0.13.5"
 quote = "1.0.40"
-rand = "0.8.5"
-rand_chacha = "0.3.1"
+rand = "0.9.1"
+rand_chacha = "0.9.0"
 rayon = "1.10.0"
 ref-cast = "1.0.24"
 regex = "1.11.1"
@@ -102,7 +102,7 @@ test-case = "3.3.1"
 textwrap = "0.16.2"
 thiserror = "2.0.12"
 timeago = { version = "0.4.2", default-features = false }
-tokio = { version = "1.44.2" }
+tokio = { version = "1.44.2", features = ["io-util"] }
 toml_edit = { version = "0.22.26", features = ["serde"] }
 tracing = "0.1.41"
 tracing-chrome = "0.7.2"

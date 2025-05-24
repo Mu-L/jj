@@ -29,7 +29,28 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `bookmark.remote() == "foo"` still works, but `bookmark.remote().<method>()`
   might need `if(bookmark.remote(), ..)` to suppress error.
 
+* The deprecated `jj branch` subcommands have been removed. Use the `jj bookmark`
+  subcommands instead.
+
+* `jj rebase` now automatically abandons divergent commits if another commit
+  with the same change ID is already present in the destination with identical
+  changes. To keep these divergent commits, use the `--keep-divergent` flag.
+
+* `jj util completion` now requires the name of the shell as a positional argument and
+  no longer produces Bash completions by default. The deprecated optional arguments for
+  different shells have been removed.
+
+* The deprecated `--skip-empty` flag for `jj rebase` has been removed. Use the
+  `--skip-emptied` flag instead.
+
 ### Deprecations
+
+* The `ui.diff.format` and `ui.diff.tool` config options have been merged as
+  `ui.diff-formatter`. The builtin format can be specified as `:<format>`
+  (e.g. `ui.diff-formatter=":git"` for Git diffs.)
+
+* The `.normal_hex()` method will be removed from the `CommitId` template type.
+  It's useful only for the `ChangeId` type.
 
 ### New features
 
@@ -40,11 +61,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   anywhere in the revision tree with the `--insert-before`, `--insert-after` and
   `--destination` command line flags.
 
+* Added `git.track-default-bookmark-on-clone` setting to control whether to
+  track the default remote bookmark on `jj git clone`.
+
+* Templates can now do arithmetic on integers with the `+`, `-`, `*`, `/`, and `%`
+  infix operators.
+
 ### Fixed bugs
 
 * Work around a git issue that could cause subprocess operations to hang if the
   `core.fsmonitor` gitconfig is set in the global or system gitconfigs.
   [#6440](https://github.com/jj-vcs/jj/issues/6440)
+
+* `jj parallelize` can now parallelize groups of changes that _start_ with an
+  immutable change, but do not contain any other immutable changes.
 
 ### Packaging changes
 

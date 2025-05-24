@@ -18,10 +18,12 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::fs;
 use std::fs::File;
-use std::io::Read;
+use std::io::Cursor;
+use std::io::Read as _;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -32,6 +34,8 @@ use futures::stream::BoxStream;
 use pollster::FutureExt as _;
 use prost::Message as _;
 use tempfile::NamedTempFile;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt as _;
 
 use crate::backend::make_root_commit;
 use crate::backend::Backend;
@@ -184,16 +188,27 @@ impl Backend for SimpleBackend {
         1
     }
 
-    async fn read_file(&self, _path: &RepoPath, id: &FileId) -> BackendResult<Box<dyn Read>> {
-        let path = self.file_path(id);
-        let file = File::open(path).map_err(|err| map_not_found_err(err, id))?;
-        Ok(Box::new(file))
+    async fn read_file(
+        &self,
+        path: &RepoPath,
+        id: &FileId,
+    ) -> BackendResult<Pin<Box<dyn AsyncRead>>> {
+        let disk_path = self.file_path(id);
+        let mut file = File::open(disk_path).map_err(|err| map_not_found_err(err, id))?;
+        let mut buf = vec![];
+        file.read_to_end(&mut buf)
+            .map_err(|err| BackendError::ReadFile {
+                path: path.to_owned(),
+                id: id.clone(),
+                source: err.into(),
+            })?;
+        Ok(Box::pin(Cursor::new(buf)))
     }
 
     async fn write_file(
         &self,
         _path: &RepoPath,
-        contents: &mut (dyn Read + Send),
+        contents: &mut (dyn AsyncRead + Send + Unpin),
     ) -> BackendResult<FileId> {
         // TODO: Write temporary file in the destination directory (#5712)
         let temp_file = NamedTempFile::new_in(&self.path).map_err(to_other_err)?;
@@ -201,7 +216,7 @@ impl Backend for SimpleBackend {
         let mut hasher = Blake2b512::new();
         let mut buff: Vec<u8> = vec![0; 1 << 14];
         loop {
-            let bytes_read = contents.read(&mut buff).map_err(to_other_err)?;
+            let bytes_read = contents.read(&mut buff).await.map_err(to_other_err)?;
             if bytes_read == 0 {
                 break;
             }

@@ -17,12 +17,13 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::io::Read;
+use std::pin::Pin;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use thiserror::Error;
+use tokio::io::AsyncRead;
 
 use crate::content_hash::ContentHash;
 use crate::hex_util;
@@ -421,12 +422,16 @@ pub trait Backend: Send + Sync + Debug {
     /// sent.
     fn concurrency(&self) -> usize;
 
-    async fn read_file(&self, path: &RepoPath, id: &FileId) -> BackendResult<Box<dyn Read>>;
+    async fn read_file(
+        &self,
+        path: &RepoPath,
+        id: &FileId,
+    ) -> BackendResult<Pin<Box<dyn AsyncRead>>>;
 
     async fn write_file(
         &self,
         path: &RepoPath,
-        contents: &mut (dyn Read + Send),
+        contents: &mut (dyn AsyncRead + Send + Unpin),
     ) -> BackendResult<FileId>;
 
     async fn read_symlink(&self, path: &RepoPath, id: &SymlinkId) -> BackendResult<String>;

@@ -15,9 +15,9 @@
 #![allow(missing_docs)]
 
 use std::io;
-use std::io::Read;
 use std::io::Write;
 use std::iter::zip;
+use std::pin::Pin;
 
 use bstr::BString;
 use bstr::ByteSlice as _;
@@ -27,6 +27,8 @@ use futures::Stream;
 use futures::StreamExt as _;
 use itertools::Itertools as _;
 use pollster::FutureExt as _;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt as _;
 
 use crate::backend::BackendError;
 use crate::backend::BackendResult;
@@ -97,11 +99,11 @@ async fn get_file_contents(
 ) -> BackendResult<BString> {
     match term {
         Some(id) => {
+            let mut reader = store.read_file(path, id).await?;
             let mut content = vec![];
-            store
-                .read_file_async(path, id)
-                .await?
+            reader
                 .read_to_end(&mut content)
+                .await
                 .map_err(|err| BackendError::ReadFile {
                     path: path.to_owned(),
                     id: id.clone(),
@@ -152,16 +154,17 @@ impl MaterializedTreeValue {
 pub struct MaterializedFileValue {
     pub id: FileId,
     pub executable: bool,
-    pub reader: Box<dyn Read>,
+    pub reader: Pin<Box<dyn AsyncRead>>,
 }
 
 impl MaterializedFileValue {
     /// Reads file content until EOF. The provided `path` is used only for error
     /// reporting purpose.
-    pub fn read_all(&mut self, path: &RepoPath) -> BackendResult<Vec<u8>> {
+    pub async fn read_all(&mut self, path: &RepoPath) -> BackendResult<Vec<u8>> {
         let mut buf = Vec::new();
         self.reader
             .read_to_end(&mut buf)
+            .await
             .map_err(|err| BackendError::ReadFile {
                 path: path.to_owned(),
                 id: self.id.clone(),
@@ -210,7 +213,7 @@ async fn materialize_tree_value_no_access_denied(
     match value.into_resolved() {
         Ok(None) => Ok(MaterializedTreeValue::Absent),
         Ok(Some(TreeValue::File { id, executable })) => {
-            let reader = store.read_file_async(path, &id).await?;
+            let reader = store.read_file(path, &id).await?;
             Ok(MaterializedTreeValue::File(MaterializedFileValue {
                 id,
                 executable,
@@ -218,7 +221,7 @@ async fn materialize_tree_value_no_access_denied(
             }))
         }
         Ok(Some(TreeValue::Symlink(id))) => {
-            let target = store.read_symlink_async(path, &id).await?;
+            let target = store.read_symlink(path, &id).await?;
             Ok(MaterializedTreeValue::Symlink { id, target })
         }
         Ok(Some(TreeValue::GitSubmodule(id))) => Ok(MaterializedTreeValue::GitSubmodule(id)),

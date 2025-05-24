@@ -945,6 +945,62 @@ fn test_config_edit_user_new_file() {
     );
 }
 
+// TODO: remove after deprecation period in 0.35
+#[cfg_attr(not(target_os = "macos"), ignore)]
+#[test]
+fn test_config_edit_user_deprecated_file() {
+    let test_env = TestEnvironment::default();
+    let user_config_path = test_env
+        .home_dir()
+        .join("Library/Application Support/jj/config.toml");
+    std::fs::create_dir_all(user_config_path.parent().unwrap()).unwrap();
+
+    std::fs::write(
+        &user_config_path,
+        indoc! {b"
+        [foo]
+        bar = 'Make sure I can pick this up'
+        "},
+    )
+    .unwrap();
+
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.env_remove("JJ_CONFIG")
+            .args(["config", "get", "foo.bar"])
+    });
+    insta::assert_snapshot!(output, @r"
+    Make sure I can pick this up
+    [EOF]
+    ------- stderr -------
+    Warning: Deprecated configuration file `$TEST_ENV/home/Library/Application Support/jj/config.toml`.
+    Configuration files in `~/Library/Application Support/jj` are deprecated, and support will be removed in a future release.
+    Instead, move your configuration files to `~/.config/jj`.
+    [EOF]
+    ");
+
+    // if you set JJ_CONFIG, you shouldn't get a warning
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.env("JJ_CONFIG", &user_config_path)
+            .args(["config", "get", "foo.bar"])
+    });
+    insta::assert_snapshot!(output, @r"
+    Make sure I can pick this up
+    [EOF]
+    ");
+
+    let new_path = test_env.home_dir().join(".config/jj/config.toml");
+    std::fs::create_dir_all(new_path.parent().unwrap()).unwrap();
+    std::fs::rename(&user_config_path, &new_path).unwrap();
+    let output = test_env.run_jj_with(|cmd| {
+        cmd.env_remove("JJ_CONFIG")
+            .args(["config", "get", "foo.bar"])
+    });
+    insta::assert_snapshot!(output, @r"
+    Make sure I can pick this up
+    [EOF]
+    ");
+}
+
 #[test]
 fn test_config_edit_repo() {
     let mut test_env = TestEnvironment::default();
@@ -985,6 +1041,7 @@ fn test_config_edit_invalid_config() {
     });
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
+    Editing file: $TEST_ENV/repo/.jj/repo/config.toml
     Warning: An error has been found inside the config:
     Caused by:
     1: Configuration cannot be parsed as TOML document
@@ -1013,6 +1070,7 @@ fn test_config_edit_invalid_config() {
     });
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
+    Editing file: $TEST_ENV/repo/.jj/repo/config.toml
     Warning: An error has been found inside the config:
     Caused by:
     1: Configuration cannot be parsed as TOML document
@@ -1097,6 +1155,7 @@ fn test_config_only_loads_toml_files() {
     1: $TEST_ENV/config/config0001.toml
     2: $TEST_ENV/config/config0002.toml
     Choose a config file (default 1): 1
+    Editing file: $TEST_ENV/config/config0001.toml
     [EOF]
     ");
 }

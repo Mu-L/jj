@@ -23,6 +23,7 @@ use jj_lib::backend::CommitId;
 use jj_lib::config::ConfigLayer;
 use jj_lib::config::ConfigSource;
 use jj_lib::object_id::ObjectId as _;
+use jj_lib::op_store::OperationId;
 use jj_lib::op_walk;
 use jj_lib::op_walk::OpsetEvaluationError;
 use jj_lib::op_walk::OpsetResolutionError;
@@ -588,19 +589,36 @@ fn test_resolve_op_parents_children() {
     let tx1 = repo.start_transaction();
     let tx2 = repo.start_transaction();
     let repo = testutils::commit_transactions(vec![tx1, tx2]);
+    let parent_op_ids = repo.operation().parent_ids();
+
+    // The subexpression that resolves to multiple operations (i.e. the accompanying
+    // op ids) should be reported, not the full expression provided by the user.
     let op5_id_hex = repo.operation().id().hex();
-    assert_matches!(
-        op_walk::resolve_op_with_repo(&repo, &format!("{op5_id_hex}-")),
-        Err(OpsetEvaluationError::OpsetResolution(
-            OpsetResolutionError::MultipleOperations { .. }
-        ))
+    let parents_op_str = format!("{op5_id_hex}-");
+    let error = op_walk::resolve_op_with_repo(&repo, &parents_op_str).unwrap_err();
+    assert_eq!(
+        extract_multiple_operations_error(&error).unwrap(),
+        (&parents_op_str, parent_op_ids)
     );
+    let grandparents_op_str = format!("{op5_id_hex}--");
+    let error = op_walk::resolve_op_with_repo(&repo, &grandparents_op_str).unwrap_err();
+    assert_eq!(
+        extract_multiple_operations_error(&error).unwrap(),
+        (&parents_op_str, parent_op_ids)
+    );
+    let children_of_parents_op_str = format!("{op5_id_hex}-+");
+    let error = op_walk::resolve_op_with_repo(&repo, &children_of_parents_op_str).unwrap_err();
+    assert_eq!(
+        extract_multiple_operations_error(&error).unwrap(),
+        (&parents_op_str, parent_op_ids)
+    );
+
     let op2_id_hex = operations[2].id().hex();
-    assert_matches!(
-        op_walk::resolve_op_with_repo(&repo, &format!("{op2_id_hex}+")),
-        Err(OpsetEvaluationError::OpsetResolution(
-            OpsetResolutionError::MultipleOperations { .. }
-        ))
+    let op_str = format!("{op2_id_hex}+");
+    let error = op_walk::resolve_op_with_repo(&repo, &op_str).unwrap_err();
+    assert_eq!(
+        extract_multiple_operations_error(&error).unwrap(),
+        (&op_str, parent_op_ids)
     );
 }
 
@@ -680,4 +698,19 @@ fn test_gc() {
     // Sanity check for the last state
     assert_eq!(expected_op_entries.len(), 1);
     assert_eq!(expected_view_entries.len(), 1);
+}
+
+#[track_caller]
+fn extract_multiple_operations_error(
+    error: &OpsetEvaluationError,
+) -> Option<(&String, &[OperationId])> {
+    if let OpsetEvaluationError::OpsetResolution(OpsetResolutionError::MultipleOperations {
+        expr,
+        candidates,
+    }) = error
+    {
+        Some((expr, candidates))
+    } else {
+        None
+    }
 }

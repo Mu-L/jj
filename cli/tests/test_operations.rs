@@ -105,6 +105,32 @@ fn test_op_log() {
     [EOF]
     ");
 
+    let output = work_dir.run_jj(["op", "log", "--op-diff", "--color=always"]);
+    insta::assert_snapshot!(output, @r"
+    [1m[38;5;2m@[0m  [1m[38;5;12m09a518cf68a5[39m [38;5;3mtest-username@host.example.com[39m [38;5;14m2001-02-03 04:05:08.000 +07:00[39m - [38;5;14m2001-02-03 04:05:08.000 +07:00[39m[0m
+    │  [1mdescribe commit e8849ae12c709f2321908879bc724fdb2ab8a781[0m
+    │  [1m[38;5;13margs: jj describe -m 'description 0'[39m[0m
+    │
+    │  Changed commits:
+    │  ○  [38;5;2m+[39m [1m[38;5;13mq[38;5;8mpvuntsm[39m [38;5;12m3[38;5;8mae22e7f[39m [38;5;10m(empty)[39m description 0[0m
+    │     [38;5;1m-[39m [1m[39mq[0m[38;5;8mpvuntsm[39m hidden [1m[38;5;4me[0m[38;5;8m8849ae1[39m [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
+    │
+    │  Changed working copy [38;5;2mdefault@[39m:
+    │  [38;5;2m+[39m [1m[38;5;13mq[38;5;8mpvuntsm[39m [38;5;12m3[38;5;8mae22e7f[39m [38;5;10m(empty)[39m description 0[0m
+    │  [38;5;1m-[39m [1m[39mq[0m[38;5;8mpvuntsm[39m hidden [1m[38;5;4me[0m[38;5;8m8849ae1[39m [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
+    ○  [38;5;4m2affa7025254[39m [38;5;3mtest-username@host.example.com[39m [38;5;6m2001-02-03 04:05:07.000 +07:00[39m - [38;5;6m2001-02-03 04:05:07.000 +07:00[39m
+    │  add workspace 'default'
+    │
+    │  Changed commits:
+    │  ○  [38;5;2m+[39m [1m[38;5;13mq[38;5;8mpvuntsm[39m [38;5;12me[38;5;8m8849ae1[39m [38;5;10m(empty)[39m [38;5;10m(no description set)[0m
+    │
+    │  Changed working copy [38;5;2mdefault@[39m:
+    │  [38;5;2m+[39m [1m[38;5;13mq[38;5;8mpvuntsm[39m [38;5;12me[38;5;8m8849ae1[39m [38;5;10m(empty)[39m [38;5;10m(no description set)[0m
+    │  [38;5;1m-[39m (absent)
+    ○  [38;5;4m000000000000[39m [38;5;2mroot()[39m
+    [EOF]
+    ");
+
     work_dir
         .run_jj(["describe", "-m", "description 1"])
         .success();
@@ -120,7 +146,7 @@ fn test_op_log() {
     insta::assert_snapshot!(work_dir.run_jj(["log", "--at-op", "@-"]), @r#"
     ------- stderr -------
     Error: The "@" expression resolved to more than one operation
-    Hint: Try specifying one of the operations by ID: ad1b3bd7fb02, 9e17e47612d5
+    Hint: Try specifying one of the operations by ID: ca1431ae8aca, f392182c5ff4
     [EOF]
     [exit status: 1]
     "#);
@@ -1050,10 +1076,10 @@ fn test_op_summary_diff_template() {
       To operation: [38;5;4m4d601e03331c[39m ([38;5;6m2001-02-03 08:05:09[39m) undo operation 5881546f5a5c322f0f5ced5216d4eb1110570617786292c2e3c102fabb6eb74c3a1183349eee2371ba24ebda7801bf43b6382957756040198384e3a0deeb34fa
 
     Changed commits:
-    ○  [38;5;2m+[39m [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [1m[38;5;4me[0m[38;5;8m8849ae1[39m [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
+    ○  [38;5;2m+[39m [1m[38;5;13mq[38;5;8mpvuntsm[39m [38;5;12me[38;5;8m8849ae1[39m [38;5;10m(empty)[39m [38;5;10m(no description set)[0m
 
     Changed working copy [38;5;2mdefault@[39m:
-    [38;5;2m+[39m [1m[38;5;5mq[0m[38;5;8mpvuntsm[39m [1m[38;5;4me[0m[38;5;8m8849ae1[39m [38;5;2m(empty)[39m [38;5;2m(no description set)[39m
+    [38;5;2m+[39m [1m[38;5;13mq[38;5;8mpvuntsm[39m [38;5;12me[38;5;8m8849ae1[39m [38;5;10m(empty)[39m [38;5;10m(no description set)[0m
     [38;5;1m-[39m (absent)
     [EOF]
     ");
@@ -1078,14 +1104,14 @@ fn test_op_summary_diff_template() {
         "--color=debug",
     ]);
     insta::assert_snapshot!(output, @r"
-    From operation: [38;5;4m<<operation id short::000000000000>>[39m<<operation:: >>[38;5;2m<<operation root::root()>>[39m
-      To operation: [38;5;4m<<operation id short::dfdb600231fe>>[39m<<operation:: (>>[38;5;6m<<operation time end local format::2001-02-03 08:05:12>>[39m<<operation::) >><<operation description first_line::undo operation 496308a90c9da4609359f773ea4b4eae56ee1939b00bc9c5a52d4ce96517e7d936b5c3f4b76d6539f873f71908c84c72e7840f2e16a127a0cd6d79b83016ea96>>
+    From operation: [38;5;4m<<op_diff operation id short::000000000000>>[39m<<op_diff operation:: >>[38;5;2m<<op_diff operation root::root()>>[39m
+      To operation: [38;5;4m<<op_diff operation id short::dfdb600231fe>>[39m<<op_diff operation:: (>>[38;5;6m<<op_diff operation time end local format::2001-02-03 08:05:12>>[39m<<op_diff operation::) >><<op_diff operation description first_line::undo operation 496308a90c9da4609359f773ea4b4eae56ee1939b00bc9c5a52d4ce96517e7d936b5c3f4b76d6539f873f71908c84c72e7840f2e16a127a0cd6d79b83016ea96>>
 
     Changed commits:
-    ○  [38;5;2m<<diff added::+>>[39m [1m[38;5;5m<<change_id shortest prefix::q>>[0m[38;5;8m<<change_id shortest rest::pvuntsm>>[39m [1m[38;5;4m<<commit_id shortest prefix::e>>[0m[38;5;8m<<commit_id shortest rest::8849ae1>>[39m [38;5;2m<<empty::(empty)>>[39m [38;5;2m<<empty description placeholder::(no description set)>>[39m
+    ○  [38;5;2m<<diff added::+>>[39m [1m[38;5;13m<<op_diff commit working_copy change_id shortest prefix::q>>[38;5;8m<<op_diff commit working_copy change_id shortest rest::pvuntsm>>[39m<<op_diff commit working_copy:: >>[38;5;12m<<op_diff commit working_copy commit_id shortest prefix::e>>[38;5;8m<<op_diff commit working_copy commit_id shortest rest::8849ae1>>[39m<<op_diff commit working_copy:: >>[38;5;10m<<op_diff commit working_copy empty::(empty)>>[39m<<op_diff commit working_copy:: >>[38;5;10m<<op_diff commit working_copy empty description placeholder::(no description set)>>[0m
 
     Changed working copy [38;5;2m<<working_copies::default@>>[39m:
-    [38;5;2m<<diff added::+>>[39m [1m[38;5;5m<<change_id shortest prefix::q>>[0m[38;5;8m<<change_id shortest rest::pvuntsm>>[39m [1m[38;5;4m<<commit_id shortest prefix::e>>[0m[38;5;8m<<commit_id shortest rest::8849ae1>>[39m [38;5;2m<<empty::(empty)>>[39m [38;5;2m<<empty description placeholder::(no description set)>>[39m
+    [38;5;2m<<diff added::+>>[39m [1m[38;5;13m<<op_diff commit working_copy change_id shortest prefix::q>>[38;5;8m<<op_diff commit working_copy change_id shortest rest::pvuntsm>>[39m<<op_diff commit working_copy:: >>[38;5;12m<<op_diff commit working_copy commit_id shortest prefix::e>>[38;5;8m<<op_diff commit working_copy commit_id shortest rest::8849ae1>>[39m<<op_diff commit working_copy:: >>[38;5;10m<<op_diff commit working_copy empty::(empty)>>[39m<<op_diff commit working_copy:: >>[38;5;10m<<op_diff commit working_copy empty description placeholder::(no description set)>>[0m
     [38;5;1m<<diff removed::->>[39m (absent)
     [EOF]
     ");
@@ -1096,20 +1122,25 @@ fn test_op_diff() {
     let test_env = TestEnvironment::default();
     let git_repo_path = test_env.env_root().join("git-repo");
     let git_repo = init_bare_git_repo(&git_repo_path);
-    test_env
-        .run_jj_in(".", ["git", "clone", "git-repo", "repo"])
-        .success();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let work_dir = test_env.work_dir("repo");
+    work_dir
+        .run_jj(["git", "remote", "add", "origin", "../git-repo"])
+        .success();
+    work_dir.run_jj(["git", "fetch"]).success();
+    work_dir
+        .run_jj(["bookmark", "track", "bookmark-1@origin"])
+        .success();
 
     // Overview of op log.
     let output = work_dir.run_jj(["op", "log"]);
     insta::assert_snapshot!(output, @r"
-    @  0ecba798e570 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    │  check out git remote's default branch
-    │  args: jj git clone git-repo repo
-    ○  3d94d89eabb6 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    │  fetch from git remote into empty repo
-    │  args: jj git clone git-repo repo
+    @  845057a2b174 test-username@host.example.com 2001-02-03 04:05:10.000 +07:00 - 2001-02-03 04:05:10.000 +07:00
+    │  track remote bookmark bookmark-1@origin
+    │  args: jj bookmark track bookmark-1@origin
+    ○  5446f7f2752a test-username@host.example.com 2001-02-03 04:05:09.000 +07:00 - 2001-02-03 04:05:09.000 +07:00
+    │  fetch from git remote(s) origin
+    │  args: jj git fetch
     ○  2affa7025254 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
@@ -1125,8 +1156,8 @@ fn test_op_diff() {
     ");
     let output = work_dir.run_jj(["op", "diff", "--from", "@", "--to", "@"]);
     insta::assert_snapshot!(output, @r"
-    From operation: 0ecba798e570 (2001-02-03 08:05:07) check out git remote's default branch
-      To operation: 0ecba798e570 (2001-02-03 08:05:07) check out git remote's default branch
+    From operation: 845057a2b174 (2001-02-03 08:05:10) track remote bookmark bookmark-1@origin
+      To operation: 845057a2b174 (2001-02-03 08:05:10) track remote bookmark bookmark-1@origin
     [EOF]
     ");
 
@@ -1135,16 +1166,8 @@ fn test_op_diff() {
     // @- --to @` (if `@` is not a merge commit).
     let output = work_dir.run_jj(["op", "diff", "--from", "@-", "--to", "@"]);
     insta::assert_snapshot!(output, @r"
-    From operation: 3d94d89eabb6 (2001-02-03 08:05:07) fetch from git remote into empty repo
-      To operation: 0ecba798e570 (2001-02-03 08:05:07) check out git remote's default branch
-
-    Changed commits:
-    ○  + sqpuoqvx c20d971c (empty) (no description set)
-    ○  - qpvuntsm hidden e8849ae1 (empty) (no description set)
-
-    Changed working copy default@:
-    + sqpuoqvx c20d971c (empty) (no description set)
-    - qpvuntsm hidden e8849ae1 (empty) (no description set)
+    From operation: 5446f7f2752a (2001-02-03 08:05:09) fetch from git remote(s) origin
+      To operation: 845057a2b174 (2001-02-03 08:05:10) track remote bookmark bookmark-1@origin
 
     Changed local bookmarks:
     bookmark-1:
@@ -1164,16 +1187,16 @@ fn test_op_diff() {
     let output = work_dir.run_jj(["op", "diff", "--from", "0000000"]);
     insta::assert_snapshot!(output, @r"
     From operation: 000000000000 root()
-      To operation: 0ecba798e570 (2001-02-03 08:05:07) check out git remote's default branch
+      To operation: 845057a2b174 (2001-02-03 08:05:10) track remote bookmark bookmark-1@origin
 
     Changed commits:
-    ○  + sqpuoqvx c20d971c (empty) (no description set)
-    ○  + pukowqtp 0cb7e07e bookmark-1 | Commit 1
     ○  + rnnslrkn 4ff62539 bookmark-2@origin | Commit 2
     ○  + rnnkyono 11671e4c bookmark-3@origin | Commit 3
+    ○  + pukowqtp 0cb7e07e bookmark-1 | Commit 1
+    ○  + qpvuntsm e8849ae1 (empty) (no description set)
 
     Changed working copy default@:
-    + sqpuoqvx c20d971c (empty) (no description set)
+    + qpvuntsm e8849ae1 (empty) (no description set)
     - (absent)
 
     Changed local bookmarks:
@@ -1197,18 +1220,18 @@ fn test_op_diff() {
     // Diff from latest operation to root operation
     let output = work_dir.run_jj(["op", "diff", "--to", "0000000"]);
     insta::assert_snapshot!(output, @r"
-    From operation: 0ecba798e570 (2001-02-03 08:05:07) check out git remote's default branch
+    From operation: 845057a2b174 (2001-02-03 08:05:10) track remote bookmark bookmark-1@origin
       To operation: 000000000000 root()
 
     Changed commits:
-    ○  - sqpuoqvx hidden c20d971c (empty) (no description set)
-    ○  - pukowqtp hidden 0cb7e07e Commit 1
     ○  - rnnslrkn hidden 4ff62539 Commit 2
     ○  - rnnkyono hidden 11671e4c Commit 3
+    ○  - pukowqtp hidden 0cb7e07e Commit 1
+    ○  - qpvuntsm hidden e8849ae1 (empty) (no description set)
 
     Changed working copy default@:
     + (absent)
-    - sqpuoqvx hidden c20d971c (empty) (no description set)
+    - qpvuntsm hidden e8849ae1 (empty) (no description set)
 
     Changed local bookmarks:
     bookmark-1:
@@ -1242,11 +1265,11 @@ fn test_op_diff() {
         .success();
     let output = work_dir.run_jj(["log"]);
     insta::assert_snapshot!(output, @r"
-    @  sqpuoqvx test.user@example.com 2001-02-03 08:05:07 c20d971c
+    @  qpvuntsm test.user@example.com 2001-02-03 08:05:07 e8849ae1
     │  (empty) (no description set)
-    ◆  pukowqtp someone@example.org 1970-01-01 11:00:00 bookmark-1?? bookmark-1@origin 0cb7e07e
-    │  Commit 1
-    ~
+    │ ○  pukowqtp someone@example.org 1970-01-01 11:00:00 bookmark-1?? bookmark-1@origin 0cb7e07e
+    ├─╯  Commit 1
+    ◆  zzzzzzzz root() 00000000
     [EOF]
     ------- stderr -------
     Concurrent modification detected, resolving automatically.
@@ -1254,18 +1277,18 @@ fn test_op_diff() {
     ");
     let output = work_dir.run_jj(["op", "log"]);
     insta::assert_snapshot!(output, @r"
-    @    14c0bf042ea3 test-username@host.example.com 2001-02-03 04:05:16.000 +07:00 - 2001-02-03 04:05:16.000 +07:00
+    @    ef4d1dc2a922 test-username@host.example.com 2001-02-03 04:05:19.000 +07:00 - 2001-02-03 04:05:19.000 +07:00
     ├─╮  reconcile divergent operations
     │ │  args: jj log
-    ○ │  0ecba798e570 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    │ │  check out git remote's default branch
-    │ │  args: jj git clone git-repo repo
-    │ ○  b76e81a26c96 test-username@host.example.com 2001-02-03 04:05:15.000 +07:00 - 2001-02-03 04:05:15.000 +07:00
+    ○ │  845057a2b174 test-username@host.example.com 2001-02-03 04:05:10.000 +07:00 - 2001-02-03 04:05:10.000 +07:00
+    │ │  track remote bookmark bookmark-1@origin
+    │ │  args: jj bookmark track bookmark-1@origin
+    │ ○  6dae22d68667 test-username@host.example.com 2001-02-03 04:05:18.000 +07:00 - 2001-02-03 04:05:18.000 +07:00
     ├─╯  point bookmark bookmark-1 to commit 4ff6253913375c6ebdddd8423c11df3b3f17e331
     │    args: jj bookmark set bookmark-1 -r bookmark-2@origin --at-op @-
-    ○  3d94d89eabb6 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    │  fetch from git remote into empty repo
-    │  args: jj git clone git-repo repo
+    ○  5446f7f2752a test-username@host.example.com 2001-02-03 04:05:09.000 +07:00 - 2001-02-03 04:05:09.000 +07:00
+    │  fetch from git remote(s) origin
+    │  args: jj git fetch
     ○  2affa7025254 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
@@ -1279,8 +1302,8 @@ fn test_op_diff() {
     // Diff between the first parent of the merge operation and the merge operation.
     let output = work_dir.run_jj(["op", "diff", "--from", first_parent_id, "--to", op_id]);
     insta::assert_snapshot!(output, @r"
-    From operation: 0ecba798e570 (2001-02-03 08:05:07) check out git remote's default branch
-      To operation: 14c0bf042ea3 (2001-02-03 08:05:16) reconcile divergent operations
+    From operation: 845057a2b174 (2001-02-03 08:05:10) track remote bookmark bookmark-1@origin
+      To operation: ef4d1dc2a922 (2001-02-03 08:05:19) reconcile divergent operations
 
     Changed local bookmarks:
     bookmark-1:
@@ -1294,16 +1317,8 @@ fn test_op_diff() {
     // operation.
     let output = work_dir.run_jj(["op", "diff", "--from", second_parent_id, "--to", op_id]);
     insta::assert_snapshot!(output, @r"
-    From operation: b76e81a26c96 (2001-02-03 08:05:15) point bookmark bookmark-1 to commit 4ff6253913375c6ebdddd8423c11df3b3f17e331
-      To operation: 14c0bf042ea3 (2001-02-03 08:05:16) reconcile divergent operations
-
-    Changed commits:
-    ○  + sqpuoqvx c20d971c (empty) (no description set)
-    ○  - qpvuntsm hidden e8849ae1 (empty) (no description set)
-
-    Changed working copy default@:
-    + sqpuoqvx c20d971c (empty) (no description set)
-    - qpvuntsm hidden e8849ae1 (empty) (no description set)
+    From operation: 6dae22d68667 (2001-02-03 08:05:18) point bookmark bookmark-1 to commit 4ff6253913375c6ebdddd8423c11df3b3f17e331
+      To operation: ef4d1dc2a922 (2001-02-03 08:05:19) reconcile divergent operations
 
     Changed local bookmarks:
     bookmark-1:
@@ -1331,8 +1346,8 @@ fn test_op_diff() {
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: 14c0bf042ea3 (2001-02-03 08:05:16) reconcile divergent operations
-      To operation: feab72d77022 (2001-02-03 08:05:20) fetch from git remote(s) origin
+    From operation: ef4d1dc2a922 (2001-02-03 08:05:19) reconcile divergent operations
+      To operation: 1656b0111f05 (2001-02-03 08:05:23) fetch from git remote(s) origin
 
     Changed commits:
     ○  + kulxwnxm e1a239a5 bookmark-2@origin | Commit 5
@@ -1374,8 +1389,8 @@ fn test_op_diff() {
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: feab72d77022 (2001-02-03 08:05:20) fetch from git remote(s) origin
-      To operation: d1e93c1af02f (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
+    From operation: 1656b0111f05 (2001-02-03 08:05:23) fetch from git remote(s) origin
+      To operation: d21b0264dff8 (2001-02-03 08:05:25) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
 
     Changed local bookmarks:
     bookmark-2:
@@ -1393,8 +1408,8 @@ fn test_op_diff() {
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: d1e93c1af02f (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
-      To operation: 1762fee27e1c (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
+    From operation: d21b0264dff8 (2001-02-03 08:05:25) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
+      To operation: 5ca5744f2259 (2001-02-03 08:05:27) track remote bookmark bookmark-2@origin
 
     Changed remote bookmarks:
     bookmark-2@origin:
@@ -1414,8 +1429,8 @@ fn test_op_diff() {
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: d1e93c1af02f (2001-02-03 08:05:22) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
-      To operation: 1762fee27e1c (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
+    From operation: d21b0264dff8 (2001-02-03 08:05:25) create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
+      To operation: 5ca5744f2259 (2001-02-03 08:05:27) track remote bookmark bookmark-2@origin
 
     Changed remote bookmarks:
     bookmark-2@origin:
@@ -1428,23 +1443,23 @@ fn test_op_diff() {
     let output = work_dir.run_jj(["new", "bookmark-1@origin", "-m", "new commit"]);
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
-    Working copy  (@) now at: wvuyspvk f2eb17b6 (empty) new commit
+    Working copy  (@) now at: xlzxqlsl 731ab199 (empty) new commit
     Parent commit (@-)      : zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
-    Added 1 files, modified 0 files, removed 0 files
+    Added 2 files, modified 0 files, removed 0 files
     [EOF]
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: 1762fee27e1c (2001-02-03 08:05:24) track remote bookmark bookmark-2@origin
-      To operation: 3c5e6ba178d7 (2001-02-03 08:05:28) new empty commit
+    From operation: 5ca5744f2259 (2001-02-03 08:05:27) track remote bookmark bookmark-2@origin
+      To operation: f20c0544f339 (2001-02-03 08:05:31) new empty commit
 
     Changed commits:
-    ○  + wvuyspvk f2eb17b6 (empty) new commit
-    ○  - sqpuoqvx hidden c20d971c (empty) (no description set)
+    ○  + xlzxqlsl 731ab199 (empty) new commit
+    ○  - qpvuntsm hidden e8849ae1 (empty) (no description set)
 
     Changed working copy default@:
-    + wvuyspvk f2eb17b6 (empty) new commit
-    - sqpuoqvx hidden c20d971c (empty) (no description set)
+    + xlzxqlsl 731ab199 (empty) new commit
+    - qpvuntsm hidden e8849ae1 (empty) (no description set)
     [EOF]
     ");
 
@@ -1452,17 +1467,17 @@ fn test_op_diff() {
     let output = work_dir.run_jj(["bookmark", "set", "bookmark-1", "-r", "@"]);
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
-    Moved 1 bookmarks to wvuyspvk f2eb17b6 bookmark-1* | (empty) new commit
+    Moved 1 bookmarks to xlzxqlsl 731ab199 bookmark-1* | (empty) new commit
     [EOF]
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: 3c5e6ba178d7 (2001-02-03 08:05:28) new empty commit
-      To operation: d0d572032afb (2001-02-03 08:05:30) point bookmark bookmark-1 to commit f2eb17b6ce2d4b3ed64e9d149ef4ab2013959f86
+    From operation: f20c0544f339 (2001-02-03 08:05:31) new empty commit
+      To operation: 6a8bb2bf7d13 (2001-02-03 08:05:33) point bookmark bookmark-1 to commit 731ab19950fc6fc1199b9ea73cb8b9016f22e8f3
 
     Changed local bookmarks:
     bookmark-1:
-    + wvuyspvk f2eb17b6 bookmark-1* | (empty) new commit
+    + xlzxqlsl 731ab199 bookmark-1* | (empty) new commit
     - (added) zkmtkqvo 0dee6313 bookmark-1@origin | Commit 4
     - (added) rnnslrkn 4ff62539 Commit 2
     [EOF]
@@ -1477,8 +1492,8 @@ fn test_op_diff() {
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: d0d572032afb (2001-02-03 08:05:30) point bookmark bookmark-1 to commit f2eb17b6ce2d4b3ed64e9d149ef4ab2013959f86
-      To operation: 0014ab1b9a78 (2001-02-03 08:05:32) delete bookmark bookmark-2
+    From operation: 6a8bb2bf7d13 (2001-02-03 08:05:33) point bookmark bookmark-1 to commit 731ab19950fc6fc1199b9ea73cb8b9016f22e8f3
+      To operation: 7d9da7123281 (2001-02-03 08:05:35) delete bookmark bookmark-2
 
     Changed local bookmarks:
     bookmark-2:
@@ -1492,28 +1507,18 @@ fn test_op_diff() {
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
     Changes to push to origin:
-      Move forward bookmark bookmark-1 from 0dee631320b1 to f2eb17b6ce2d
+      Move forward bookmark bookmark-1 from 0dee631320b1 to 731ab19950fc
       Delete bookmark bookmark-2 from e1a239a57eb1
-    Warning: The working-copy commit in workspace 'default' became immutable, so a new commit has been created on top of it.
-    Working copy  (@) now at: oupztwtk b8e35eb0 (empty) (no description set)
-    Parent commit (@-)      : wvuyspvk f2eb17b6 bookmark-1 | (empty) new commit
     [EOF]
     ");
     let output = work_dir.run_jj(["op", "diff"]);
     insta::assert_snapshot!(output, @r"
-    From operation: 0014ab1b9a78 (2001-02-03 08:05:32) delete bookmark bookmark-2
-      To operation: 95f036604260 (2001-02-03 08:05:34) push all tracked bookmarks to git remote origin
-
-    Changed commits:
-    ○  + oupztwtk b8e35eb0 (empty) (no description set)
-
-    Changed working copy default@:
-    + oupztwtk b8e35eb0 (empty) (no description set)
-    - wvuyspvk f2eb17b6 bookmark-1 | (empty) new commit
+    From operation: 7d9da7123281 (2001-02-03 08:05:35) delete bookmark bookmark-2
+      To operation: 04f37ad84c4b (2001-02-03 08:05:37) push all tracked bookmarks to git remote origin
 
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked wvuyspvk f2eb17b6 bookmark-1 | (empty) new commit
+    + tracked xlzxqlsl 731ab199 bookmark-1 | (empty) new commit
     - tracked zkmtkqvo 0dee6313 Commit 4
     bookmark-2@origin:
     + untracked (absent)
@@ -1790,7 +1795,7 @@ fn test_op_diff_word_wrap() {
     // ui.log-word-wrap option works, and diff stat respects content width
     insta::assert_snapshot!(render(&["op", "diff", "--from=@---", "--stat"], 40, true), @r"
     From operation: 2affa7025254 (2001-02-03 08:05:07) add workspace 'default'
-      To operation: 44e7fa64b3e5 (2001-02-03 08:05:08) snapshot working copy
+      To operation: 5d3e8c16cd1f (2001-02-03 08:05:08) snapshot working copy
 
     Changed commits:
     ○  + sqpuoqvx f6f32c19 (no description
@@ -1845,7 +1850,7 @@ fn test_op_diff_word_wrap() {
     insta::assert_snapshot!(
         render(&["op", "diff", "--from=@---", "--config", config], 10, true), @r"
     From operation: 2affa7025254 (2001-02-03 08:05:07) add workspace 'default'
-      To operation: 44e7fa64b3e5 (2001-02-03 08:05:08) snapshot working copy
+      To operation: 5d3e8c16cd1f (2001-02-03 08:05:08) snapshot working copy
 
     Changed
     commits:
@@ -1920,20 +1925,25 @@ fn test_op_show() {
     let test_env = TestEnvironment::default();
     let git_repo_path = test_env.env_root().join("git-repo");
     let git_repo = init_bare_git_repo(&git_repo_path);
-    test_env
-        .run_jj_in(".", ["git", "clone", "git-repo", "repo"])
-        .success();
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
     let work_dir = test_env.work_dir("repo");
+    work_dir
+        .run_jj(["git", "remote", "add", "origin", "../git-repo"])
+        .success();
+    work_dir.run_jj(["git", "fetch"]).success();
+    work_dir
+        .run_jj(["bookmark", "track", "bookmark-1@origin"])
+        .success();
 
     // Overview of op log.
     let output = work_dir.run_jj(["op", "log"]);
     insta::assert_snapshot!(output, @r"
-    @  0ecba798e570 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    │  check out git remote's default branch
-    │  args: jj git clone git-repo repo
-    ○  3d94d89eabb6 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    │  fetch from git remote into empty repo
-    │  args: jj git clone git-repo repo
+    @  845057a2b174 test-username@host.example.com 2001-02-03 04:05:10.000 +07:00 - 2001-02-03 04:05:10.000 +07:00
+    │  track remote bookmark bookmark-1@origin
+    │  args: jj bookmark track bookmark-1@origin
+    ○  5446f7f2752a test-username@host.example.com 2001-02-03 04:05:09.000 +07:00 - 2001-02-03 04:05:09.000 +07:00
+    │  fetch from git remote(s) origin
+    │  args: jj git fetch
     ○  2affa7025254 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
     │  add workspace 'default'
     ○  000000000000 root()
@@ -1950,17 +1960,9 @@ fn test_op_show() {
     // Showing the latest operation.
     let output = work_dir.run_jj(["op", "show", "@"]);
     insta::assert_snapshot!(output, @r"
-    0ecba798e570 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    check out git remote's default branch
-    args: jj git clone git-repo repo
-
-    Changed commits:
-    ○  + sqpuoqvx c20d971c (empty) (no description set)
-    ○  - qpvuntsm hidden e8849ae1 (empty) (no description set)
-
-    Changed working copy default@:
-    + sqpuoqvx c20d971c (empty) (no description set)
-    - qpvuntsm hidden e8849ae1 (empty) (no description set)
+    845057a2b174 test-username@host.example.com 2001-02-03 04:05:10.000 +07:00 - 2001-02-03 04:05:10.000 +07:00
+    track remote bookmark bookmark-1@origin
+    args: jj bookmark track bookmark-1@origin
 
     Changed local bookmarks:
     bookmark-1:
@@ -1980,9 +1982,9 @@ fn test_op_show() {
     // Showing a given operation.
     let output = work_dir.run_jj(["op", "show", "@-"]);
     insta::assert_snapshot!(output, @r"
-    3d94d89eabb6 test-username@host.example.com 2001-02-03 04:05:07.000 +07:00 - 2001-02-03 04:05:07.000 +07:00
-    fetch from git remote into empty repo
-    args: jj git clone git-repo repo
+    5446f7f2752a test-username@host.example.com 2001-02-03 04:05:09.000 +07:00 - 2001-02-03 04:05:09.000 +07:00
+    fetch from git remote(s) origin
+    args: jj git fetch
 
     Changed commits:
     ○  + rnnslrkn 4ff62539 bookmark-2@origin | Commit 2
@@ -2016,11 +2018,11 @@ fn test_op_show() {
         .success();
     let output = work_dir.run_jj(["log"]);
     insta::assert_snapshot!(output, @r"
-    @  sqpuoqvx test.user@example.com 2001-02-03 08:05:07 c20d971c
+    @  qpvuntsm test.user@example.com 2001-02-03 08:05:07 e8849ae1
     │  (empty) (no description set)
-    ◆  pukowqtp someone@example.org 1970-01-01 11:00:00 bookmark-1?? bookmark-1@origin 0cb7e07e
-    │  Commit 1
-    ~
+    │ ○  pukowqtp someone@example.org 1970-01-01 11:00:00 bookmark-1?? bookmark-1@origin 0cb7e07e
+    ├─╯  Commit 1
+    ◆  zzzzzzzz root() 00000000
     [EOF]
     ------- stderr -------
     Concurrent modification detected, resolving automatically.
@@ -2029,7 +2031,7 @@ fn test_op_show() {
     // Showing a merge operation is empty.
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    5d558bf1290d test-username@host.example.com 2001-02-03 04:05:14.000 +07:00 - 2001-02-03 04:05:14.000 +07:00
+    ef2d9a73a2ef test-username@host.example.com 2001-02-03 04:05:17.000 +07:00 - 2001-02-03 04:05:17.000 +07:00
     reconcile divergent operations
     args: jj log
     [EOF]
@@ -2048,7 +2050,7 @@ fn test_op_show() {
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    455714b6b49c test-username@host.example.com 2001-02-03 04:05:16.000 +07:00 - 2001-02-03 04:05:16.000 +07:00
+    1279f6806f48 test-username@host.example.com 2001-02-03 04:05:19.000 +07:00 - 2001-02-03 04:05:19.000 +07:00
     fetch from git remote(s) origin
     args: jj git fetch
 
@@ -2092,7 +2094,7 @@ fn test_op_show() {
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    f35d06c9df2a test-username@host.example.com 2001-02-03 04:05:18.000 +07:00 - 2001-02-03 04:05:18.000 +07:00
+    414022582096 test-username@host.example.com 2001-02-03 04:05:21.000 +07:00 - 2001-02-03 04:05:21.000 +07:00
     create bookmark bookmark-2 pointing to commit e1a239a57eb15cefc5910198befbbbe2b43c47af
     args: jj bookmark create bookmark-2 -r bookmark-2@origin
 
@@ -2112,7 +2114,7 @@ fn test_op_show() {
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    f36027c3b30d test-username@host.example.com 2001-02-03 04:05:20.000 +07:00 - 2001-02-03 04:05:20.000 +07:00
+    469e72ad2feb test-username@host.example.com 2001-02-03 04:05:23.000 +07:00 - 2001-02-03 04:05:23.000 +07:00
     track remote bookmark bookmark-2@origin
     args: jj bookmark track bookmark-2@origin
 
@@ -2133,7 +2135,7 @@ fn test_op_show() {
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    f36027c3b30d test-username@host.example.com 2001-02-03 04:05:20.000 +07:00 - 2001-02-03 04:05:20.000 +07:00
+    469e72ad2feb test-username@host.example.com 2001-02-03 04:05:23.000 +07:00 - 2001-02-03 04:05:23.000 +07:00
     track remote bookmark bookmark-2@origin
     args: jj bookmark track bookmark-2@origin
 
@@ -2148,24 +2150,24 @@ fn test_op_show() {
     let output = work_dir.run_jj(["new", "bookmark-1@origin", "-m", "new commit"]);
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
-    Working copy  (@) now at: xznxytkn 8fb4e1cb (empty) new commit
+    Working copy  (@) now at: tlkvzzqu 8f340dd7 (empty) new commit
     Parent commit (@-)      : zkmtkqvo 0dee6313 bookmark-1?? bookmark-1@origin | Commit 4
-    Added 1 files, modified 0 files, removed 0 files
+    Added 2 files, modified 0 files, removed 0 files
     [EOF]
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    7833d4fb1b1c test-username@host.example.com 2001-02-03 04:05:24.000 +07:00 - 2001-02-03 04:05:24.000 +07:00
+    e15c5bb81b65 test-username@host.example.com 2001-02-03 04:05:27.000 +07:00 - 2001-02-03 04:05:27.000 +07:00
     new empty commit
     args: jj new bookmark-1@origin -m 'new commit'
 
     Changed commits:
-    ○  + xznxytkn 8fb4e1cb (empty) new commit
-    ○  - sqpuoqvx hidden c20d971c (empty) (no description set)
+    ○  + tlkvzzqu 8f340dd7 (empty) new commit
+    ○  - qpvuntsm hidden e8849ae1 (empty) (no description set)
 
     Changed working copy default@:
-    + xznxytkn 8fb4e1cb (empty) new commit
-    - sqpuoqvx hidden c20d971c (empty) (no description set)
+    + tlkvzzqu 8f340dd7 (empty) new commit
+    - qpvuntsm hidden e8849ae1 (empty) (no description set)
     [EOF]
     ");
 
@@ -2173,18 +2175,18 @@ fn test_op_show() {
     let output = work_dir.run_jj(["bookmark", "set", "bookmark-1", "-r", "@"]);
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
-    Moved 1 bookmarks to xznxytkn 8fb4e1cb bookmark-1* | (empty) new commit
+    Moved 1 bookmarks to tlkvzzqu 8f340dd7 bookmark-1* | (empty) new commit
     [EOF]
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    da79395c6bc8 test-username@host.example.com 2001-02-03 04:05:26.000 +07:00 - 2001-02-03 04:05:26.000 +07:00
-    point bookmark bookmark-1 to commit 8fb4e1cb9c23474e4d02dc8e0388f8efdecc88a0
+    cddf6d16be85 test-username@host.example.com 2001-02-03 04:05:29.000 +07:00 - 2001-02-03 04:05:29.000 +07:00
+    point bookmark bookmark-1 to commit 8f340dd76dc637e4deac17f30056eef7d8eaf682
     args: jj bookmark set bookmark-1 -r @
 
     Changed local bookmarks:
     bookmark-1:
-    + xznxytkn 8fb4e1cb bookmark-1* | (empty) new commit
+    + tlkvzzqu 8f340dd7 bookmark-1* | (empty) new commit
     - (added) zkmtkqvo 0dee6313 bookmark-1@origin | Commit 4
     - (added) rnnslrkn 4ff62539 Commit 2
     [EOF]
@@ -2199,7 +2201,7 @@ fn test_op_show() {
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    3fdb331f18e1 test-username@host.example.com 2001-02-03 04:05:28.000 +07:00 - 2001-02-03 04:05:28.000 +07:00
+    093a28c30650 test-username@host.example.com 2001-02-03 04:05:31.000 +07:00 - 2001-02-03 04:05:31.000 +07:00
     delete bookmark bookmark-2
     args: jj bookmark delete bookmark-2
 
@@ -2215,29 +2217,19 @@ fn test_op_show() {
     insta::assert_snapshot!(output, @r"
     ------- stderr -------
     Changes to push to origin:
-      Move forward bookmark bookmark-1 from 0dee631320b1 to 8fb4e1cb9c23
+      Move forward bookmark bookmark-1 from 0dee631320b1 to 8f340dd76dc6
       Delete bookmark bookmark-2 from e1a239a57eb1
-    Warning: The working-copy commit in workspace 'default' became immutable, so a new commit has been created on top of it.
-    Working copy  (@) now at: pzsxstzt b0e74037 (empty) (no description set)
-    Parent commit (@-)      : xznxytkn 8fb4e1cb bookmark-1 | (empty) new commit
     [EOF]
     ");
     let output = work_dir.run_jj(["op", "show"]);
     insta::assert_snapshot!(output, @r"
-    ab0508384cc0 test-username@host.example.com 2001-02-03 04:05:30.000 +07:00 - 2001-02-03 04:05:30.000 +07:00
+    f9e1dd8479de test-username@host.example.com 2001-02-03 04:05:33.000 +07:00 - 2001-02-03 04:05:33.000 +07:00
     push all tracked bookmarks to git remote origin
     args: jj git push --tracked --deleted
 
-    Changed commits:
-    ○  + pzsxstzt b0e74037 (empty) (no description set)
-
-    Changed working copy default@:
-    + pzsxstzt b0e74037 (empty) (no description set)
-    - xznxytkn 8fb4e1cb bookmark-1 | (empty) new commit
-
     Changed remote bookmarks:
     bookmark-1@origin:
-    + tracked xznxytkn 8fb4e1cb bookmark-1 | (empty) new commit
+    + tracked tlkvzzqu 8f340dd7 bookmark-1 | (empty) new commit
     - tracked zkmtkqvo 0dee6313 Commit 4
     bookmark-2@origin:
     + untracked (absent)
